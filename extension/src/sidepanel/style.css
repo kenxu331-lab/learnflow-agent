@@ -10,6 +10,10 @@ body {
   color: #172033;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 .sidepanel {
   display: grid;
   gap: 0.75rem;

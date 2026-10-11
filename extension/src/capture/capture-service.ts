@@ -64,56 +64,117 @@ function logCaptureStage(
   });
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function isContentBlock(value: unknown): value is ContentBlock {
-  if (typeof value !== "object" || value === null) {
+  if (!isRecord(value)) {
     return false;
   }
 
-  const block = value as Record<string, unknown>;
+  const blockType = value.type;
+  const level = value.level;
   return (
-    typeof block.id === "string" &&
-    typeof block.text === "string" &&
-    ["heading", "paragraph", "code", "list"].includes(String(block.type))
+    typeof value.id === "string" &&
+    typeof value.text === "string" &&
+    typeof blockType === "string" &&
+    ["heading", "paragraph", "code", "list"].includes(blockType) &&
+    (!("level" in value) ||
+      (typeof level === "number" &&
+        Number.isSafeInteger(level) &&
+        level >= 1 &&
+        level <= 6)) &&
+    (!("language" in value) || typeof value.language === "string")
   );
 }
 
 export function isPageSnapshot(value: unknown): value is PageSnapshot {
-  if (typeof value !== "object" || value === null) {
+  if (!isRecord(value)) {
     return false;
   }
 
-  const snapshot = value as Record<string, unknown>;
-  const extraction = snapshot.extraction as Record<string, unknown> | undefined;
-  const stats = snapshot.stats as Record<string, unknown> | undefined;
+  if (
+    value.schemaVersion !== 1 ||
+    typeof value.url !== "string" ||
+    typeof value.title !== "string" ||
+    typeof value.capturedAt !== "string" ||
+    Number.isNaN(Date.parse(value.capturedAt)) ||
+    !Array.isArray(value.blocks) ||
+    !isRecord(value.extraction) ||
+    !isRecord(value.stats)
+  ) {
+    return false;
+  }
+
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(value.url);
+  } catch {
+    return false;
+  }
+
+  const contentBlocks = value.blocks.filter(isContentBlock);
+  if (contentBlocks.length !== value.blocks.length) {
+    return false;
+  }
+
+  const extraction = value.extraction;
+  const stats = value.stats;
+  const expectedCharacterCount = contentBlocks.reduce(
+    (total, block) => total + block.text.length,
+    0,
+  );
+  const codeBlockCount = contentBlocks.filter(
+    (block) => block.type === "code",
+  ).length;
+  const characterCount = stats.characterCount;
+  const statsCodeBlockCount = stats.codeBlockCount;
+  const blockCount = stats.blockCount;
 
   return (
-    snapshot.schemaVersion === 1 &&
-    typeof snapshot.url === "string" &&
-    typeof snapshot.title === "string" &&
-    typeof snapshot.capturedAt === "string" &&
-    Array.isArray(snapshot.blocks) &&
-    snapshot.blocks.every(isContentBlock) &&
-    extraction !== undefined &&
-    ["article", "main", "fallback"].includes(String(extraction.strategy)) &&
+    (parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:") &&
+    typeof extraction.strategy === "string" &&
+    ["article", "main", "fallback"].includes(extraction.strategy) &&
     typeof extraction.truncated === "boolean" &&
     Array.isArray(extraction.warnings) &&
     extraction.warnings.every((warning) => typeof warning === "string") &&
-    stats !== undefined &&
-    typeof stats.characterCount === "number" &&
-    typeof stats.codeBlockCount === "number" &&
-    typeof stats.blockCount === "number"
+    typeof characterCount === "number" &&
+    Number.isSafeInteger(characterCount) &&
+    characterCount >= 0 &&
+    typeof statsCodeBlockCount === "number" &&
+    Number.isSafeInteger(statsCodeBlockCount) &&
+    statsCodeBlockCount >= 0 &&
+    typeof blockCount === "number" &&
+    Number.isSafeInteger(blockCount) &&
+    blockCount >= 0 &&
+    characterCount === expectedCharacterCount &&
+    statsCodeBlockCount === codeBlockCount &&
+    blockCount === contentBlocks.length
   );
 }
 
-async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
+interface TabLookupResult {
+  tab?: chrome.tabs.Tab;
+  preferredTargetClosed: boolean;
+}
+
+async function getActiveTab(): Promise<TabLookupResult> {
   if (preferredCaptureTabId !== undefined) {
-    return chrome.tabs.get(preferredCaptureTabId);
+    try {
+      return {
+        tab: await chrome.tabs.get(preferredCaptureTabId),
+        preferredTargetClosed: false,
+      };
+    } catch {
+      return { preferredTargetClosed: true };
+    }
   }
 
   // lastFocusedWindow is reliable from a service worker; currentWindow has no
   // document window in this context and can select no window unexpectedly.
   const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  return tabs[0];
+  return { tab: tabs[0], preferredTargetClosed: false };
 }
 
 function isSameTabPage(
@@ -181,12 +242,21 @@ function classifyInjectionError(
 }
 
 export async function captureCurrentPage(): Promise<PageCaptureResponse> {
-  let initialTab: chrome.tabs.Tab | undefined;
+  let initialLookup: TabLookupResult;
   try {
-    initialTab = await getActiveTab();
+    initialLookup = await getActiveTab();
   } catch (error) {
     return failure("UNKNOWN_ERROR", `无法读取当前标签页：${errorMessage(error)}`);
   }
+
+  if (initialLookup.preferredTargetClosed) {
+    logCaptureStage("preferred-tab-closed", undefined, {
+      preferredTabId: preferredCaptureTabId,
+    });
+    return failure("STALE_TAB", "目标标签页已关闭，请重新点击扩展工具栏图标。");
+  }
+
+  const initialTab = initialLookup.tab;
 
   if (!initialTab) {
     logCaptureStage("no-active-tab", undefined);
@@ -226,12 +296,19 @@ export async function captureCurrentPage(): Promise<PageCaptureResponse> {
     return classifyInjectionError(error, initialTab);
   }
 
-  let currentTab: chrome.tabs.Tab | undefined;
+  let currentLookup: TabLookupResult;
   try {
-    currentTab = await getActiveTab();
+    currentLookup = await getActiveTab();
   } catch (error) {
     return failure("UNKNOWN_ERROR", `无法确认采集页面状态：${errorMessage(error)}`);
   }
+
+  if (currentLookup.preferredTargetClosed) {
+    logCaptureStage("preferred-tab-closed-during-capture", initialTab);
+    return failure("STALE_TAB", "采集期间目标标签页已关闭，请重新采集。");
+  }
+
+  const currentTab = currentLookup.tab;
 
   const snapshot = injectionResults[0]?.result;
   if (!isPageSnapshot(snapshot)) {

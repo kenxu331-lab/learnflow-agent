@@ -40,6 +40,7 @@ function renderWarnings(warnings: string[]): void {
 
 function renderSnapshot(snapshot: PageSnapshot): void {
   const preview = snapshot.blocks.map((block) => block.text).join("\n\n");
+  errorPanel.hidden = true;
   pageTitle.textContent = snapshot.title;
   pageUrl.textContent = snapshot.url;
   characterCount.textContent = String(snapshot.stats.characterCount);
@@ -53,6 +54,7 @@ function renderError(message: string): void {
   errorMessage.textContent = message;
   errorPanel.hidden = false;
   resultPanel.hidden = true;
+  warningPanel.hidden = true;
   captureStatus.textContent = "采集失败";
 }
 

@@ -38,13 +38,15 @@ const snapshot: PageSnapshot = {
 describe("captureCurrentPage", () => {
   let query: ReturnType<typeof vi.fn>;
   let executeScript: ReturnType<typeof vi.fn>;
+  let getTab: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     query = vi.fn();
     executeScript = vi.fn();
+    getTab = vi.fn();
     setCaptureTarget(undefined);
     vi.stubGlobal("chrome", {
-      tabs: { query },
+      tabs: { query, get: getTab },
       scripting: { executeScript },
       runtime: { onMessage: { addListener: vi.fn() } },
     });
@@ -158,6 +160,61 @@ describe("captureCurrentPage", () => {
       error: { code: "INVALID_RESULT" },
     });
     expect(isPageSnapshot({ unexpected: true })).toBe(false);
+  });
+
+  it("rejects null and inconsistent nested snapshot fields without throwing", () => {
+    const invalidSnapshots: unknown[] = [
+      { ...snapshot, extraction: null },
+      { ...snapshot, stats: null },
+      { ...snapshot, blocks: [null] },
+      {
+        ...snapshot,
+        blocks: [{ ...snapshot.blocks[0], level: "1" }],
+      },
+      {
+        ...snapshot,
+        stats: { ...snapshot.stats, characterCount: -1 },
+      },
+      {
+        ...snapshot,
+        stats: { ...snapshot.stats, blockCount: 2 },
+      },
+    ];
+
+    for (const value of invalidSnapshots) {
+      expect(() => isPageSnapshot(value)).not.toThrow();
+      expect(isPageSnapshot(value)).toBe(false);
+    }
+  });
+
+  it("uses the preferred action tab instead of falling back to another tab", async () => {
+    const preferredTab = { ...activeTab, id: 42 };
+    setCaptureTarget(preferredTab.id);
+    getTab.mockResolvedValue(preferredTab);
+    executeScript.mockResolvedValue([{ result: snapshot }]);
+
+    const response = await captureCurrentPage();
+
+    expect(response).toEqual({ ok: true, snapshot });
+    expect(getTab).toHaveBeenCalledTimes(2);
+    expect(query).not.toHaveBeenCalled();
+    expect(executeScript).toHaveBeenCalledWith(
+      expect.objectContaining({ target: { tabId: preferredTab.id } }),
+    );
+  });
+
+  it("reports a closed preferred tab without capturing another tab", async () => {
+    setCaptureTarget(42);
+    getTab.mockRejectedValue(new Error("No tab with id: 42"));
+
+    const response = await captureCurrentPage();
+
+    expect(response).toMatchObject({
+      ok: false,
+      error: { code: "STALE_TAB" },
+    });
+    expect(query).not.toHaveBeenCalled();
+    expect(executeScript).not.toHaveBeenCalled();
   });
 
   it("handles capture messages and ignores unrelated messages", async () => {
