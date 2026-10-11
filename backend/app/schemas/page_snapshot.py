@@ -4,7 +4,16 @@ from datetime import datetime
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 MAX_BLOCKS = 300
 MAX_CHARACTERS = 60_000
@@ -20,35 +29,36 @@ def utf16_length(value: str) -> int:
 class ContentBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: str
+    id: StrictStr = Field(min_length=1, max_length=200)
+    stableKey: StrictStr | None = Field(default=None, min_length=1, max_length=200)
     type: Literal["heading", "paragraph", "code", "list"]
-    text: str
-    level: int | None = Field(default=None, ge=1, le=6)
-    language: str | None = None
+    text: StrictStr
+    level: StrictInt | None = Field(default=None, ge=1, le=6)
+    language: StrictStr | None = None
 
 
 class ExtractionMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     strategy: Literal["article", "main", "fallback"]
-    truncated: bool
-    warnings: list[str]
+    truncated: StrictBool
+    warnings: list[StrictStr]
 
 
 class SnapshotStats(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    characterCount: int = Field(ge=0)
-    codeBlockCount: int = Field(ge=0)
-    blockCount: int = Field(ge=0)
+    characterCount: StrictInt = Field(ge=0)
+    codeBlockCount: StrictInt = Field(ge=0)
+    blockCount: StrictInt = Field(ge=0)
 
 
 class PageSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schemaVersion: Literal[1]
-    url: str
-    title: str = Field(min_length=1)
+    url: StrictStr
+    title: StrictStr = Field(min_length=1)
     capturedAt: datetime
     blocks: list[ContentBlock] = Field(max_length=MAX_BLOCKS)
     extraction: ExtractionMetadata

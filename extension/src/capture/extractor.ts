@@ -153,6 +153,7 @@ export function extractPageSnapshot(): PageSnapshot {
   const extractionRoot = cloneForExtraction(selected.root);
   const blocks: PageSnapshot["blocks"] = [];
   const warnings: string[] = [];
+  const stableOccurrenceCounts = new Map<string, number>();
   let characterCount = 0;
   let codeBlockCount = 0;
   let truncated = false;
@@ -161,6 +162,28 @@ export function extractPageSnapshot(): PageSnapshot {
     if (!warnings.includes(warning)) {
       warnings.push(warning);
     }
+  }
+
+  function hashString(value: string, seed: number): string {
+    let hash = seed;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, "0");
+  }
+
+  function stableKeyFor(
+    type: "heading" | "paragraph" | "code" | "list",
+    text: string,
+    language: string | undefined,
+  ): string {
+    const signature = `${type}\u0000${language ?? ""}\u0000${text}`;
+    const occurrence = stableOccurrenceCounts.get(signature) ?? 0;
+    stableOccurrenceCounts.set(signature, occurrence + 1);
+    const firstHash = hashString(signature, 2166136261);
+    const secondHash = hashString(signature, 16777619);
+    return `v1-${firstHash}${secondHash}-${occurrence}`;
   }
 
   function addBlock(
@@ -204,6 +227,7 @@ export function extractPageSnapshot(): PageSnapshot {
 
     blocks.push({
       id: `block-${blocks.length + 1}`,
+      stableKey: stableKeyFor(type, text, language),
       type,
       text,
       ...(level === undefined ? {} : { level }),

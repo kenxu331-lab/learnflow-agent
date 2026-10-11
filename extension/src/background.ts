@@ -2,10 +2,12 @@ import {
   registerCaptureMessageHandler,
   setCaptureTarget,
 } from "./capture/capture-service";
-import { ingestPageSnapshot } from "./backend/api-client";
+import { commitNote, ingestPageSnapshot, previewNote } from "./backend/api-client";
 import { ensureTrustedStorageAccess } from "./backend/storage";
 import {
   isPageIngestRequest,
+  isNoteCommitRequest,
+  isNotePreviewRequest,
   type BackendClientResult,
 } from "./backend/types";
 
@@ -51,25 +53,40 @@ export function registerActionClickHandler(): void {
 
 export function registerBackendMessageHandler(): void {
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (!isPageIngestRequest(message)) {
-      return false;
+    if (isPageIngestRequest(message)) {
+      void ingestPageSnapshot(message.snapshot)
+        .then(sendResponse)
+        .catch(() => sendResponse(backendUnknownError()));
+      return true;
     }
 
-    void ingestPageSnapshot(message.snapshot)
-      .then(sendResponse)
-      .catch(() => {
-        const response: BackendClientResult = {
-          ok: false,
-          error: {
-            code: "UNKNOWN_ERROR",
-            message: "本地服务请求失败，请重试。",
-          },
-        };
-        sendResponse(response);
-      });
+    if (isNotePreviewRequest(message)) {
+      void previewNote({
+        snapshot: message.snapshot,
+        selectedBlockIds: message.selectedBlockIds,
+        personalNote: message.personalNote,
+      })
+        .then(sendResponse)
+        .catch(() => sendResponse(backendUnknownError()));
+      return true;
+    }
 
-    return true;
+    if (isNoteCommitRequest(message)) {
+      void commitNote(message.proposalId)
+        .then(sendResponse)
+        .catch(() => sendResponse(backendUnknownError()));
+      return true;
+    }
+
+    return false;
   });
+}
+
+function backendUnknownError(): BackendClientResult {
+  return {
+    ok: false,
+    error: { code: "UNKNOWN_ERROR", message: "本地服务请求失败，请重试。" },
+  };
 }
 
 async function configureStorageAccess(): Promise<void> {

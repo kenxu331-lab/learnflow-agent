@@ -28,6 +28,18 @@ function setupDom(): void {
     <button id="send-button" type="button" disabled>发送到本地服务</button>
     <p id="connection-status"></p>
     <p id="send-status"></p>
+    <section id="selection-panel" hidden>
+      <p id="selection-count"></p>
+      <div id="block-list"></div>
+      <textarea id="personal-note"></textarea>
+      <button id="preview-note-button" type="button" disabled>预览</button>
+    </section>
+    <section id="note-preview-panel" hidden>
+      <p id="note-action"></p><p id="note-path"></p>
+      <pre id="markdown-preview"></pre><pre id="markdown-diff"></pre>
+      <button id="commit-note-button" type="button" disabled>提交</button>
+      <p id="note-status"></p>
+    </section>
     <div id="error-panel" hidden><p id="error-message"></p></div>
   `;
 }
@@ -119,7 +131,9 @@ describe("side panel visibility state", () => {
       );
     });
 
-    document.querySelector<HTMLButtonElement>("#send-button")?.click();
+    const sendButton = document.querySelector<HTMLButtonElement>("#send-button");
+    expect(sendButton?.disabled).toBe(false);
+    sendButton?.click();
     await vi.waitFor(() => {
       expect(document.querySelector<HTMLElement>("#send-status")?.textContent).toBe(
         "本地服务不可用",
@@ -186,5 +200,481 @@ describe("side panel visibility state", () => {
     });
 
     expect(set).not.toHaveBeenCalled();
+  });
+
+  it("requires selection, previews first, and commits only after confirmation", async () => {
+    setupDom();
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot })
+      .mockResolvedValueOnce({
+        ok: true,
+        response: {
+          proposalId: "proposal-1",
+          action: "create",
+          noteId: "learnflow-1",
+          targetRelativePath: "LearnFlow/example.com/tutorial--hash.md",
+          markdownPreview: "# Tutorial",
+          diff: "+# Tutorial",
+          expectedRevision: null,
+          expiresAt: "2026-10-11T20:00:00Z",
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        response: {
+          status: "created",
+          noteId: "learnflow-1",
+          targetRelativePath: "LearnFlow/example.com/tutorial--hash.md",
+          revision: "sha256:revision",
+        },
+      });
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#selection-panel")?.hidden).toBe(false);
+    });
+
+    const previewButton = document.querySelector<HTMLButtonElement>("#preview-note-button");
+    expect(previewButton?.disabled).toBe(true);
+    document.querySelector<HTMLInputElement>("#block-list input")?.click();
+    expect(previewButton?.disabled).toBe(false);
+
+    previewButton?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#note-preview-panel")?.hidden).toBe(false);
+    });
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(sendMessage.mock.calls[1][0]).toMatchObject({
+      type: "NOTE_PREVIEW_REQUEST",
+      selectedBlockIds: ["block-1"],
+    });
+
+    document.querySelector<HTMLButtonElement>("#commit-note-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#note-status")?.textContent).toBe(
+        "保存完成：created",
+      );
+    });
+    expect(sendMessage).toHaveBeenCalledTimes(3);
+    expect(sendMessage.mock.calls[2][0]).toEqual({
+      type: "NOTE_COMMIT_REQUEST",
+      proposalId: "proposal-1",
+    });
+  });
+
+  it("invalidates a proposal when the note changes or a new capture starts", async () => {
+    setupDom();
+    const previewResponse = {
+      ok: true,
+      response: {
+        proposalId: "proposal-1",
+        action: "create",
+        noteId: "learnflow-1",
+        targetRelativePath: "LearnFlow/example.com/tutorial--hash.md",
+        markdownPreview: "# Tutorial",
+        diff: "+# Tutorial",
+        expectedRevision: null,
+        expiresAt: "2026-10-11T20:00:00Z",
+      },
+    } as const;
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot })
+      .mockResolvedValueOnce(previewResponse)
+      .mockResolvedValueOnce(previewResponse)
+      .mockResolvedValueOnce({ ok: true, snapshot });
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#selection-panel")?.hidden).toBe(false);
+    });
+    document.querySelector<HTMLInputElement>("#block-list input")?.click();
+    document.querySelector<HTMLTextAreaElement>("#personal-note")!.value = "理解";
+    document
+      .querySelector<HTMLTextAreaElement>("#personal-note")
+      ?.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector<HTMLButtonElement>("#preview-note-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#note-preview-panel")?.hidden).toBe(false);
+    });
+
+    document.querySelector<HTMLTextAreaElement>("#personal-note")!.value = "修改";
+    document
+      .querySelector<HTMLTextAreaElement>("#personal-note")
+      ?.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(document.querySelector<HTMLElement>("#note-preview-panel")?.hidden).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>("#commit-note-button")?.disabled).toBe(
+      true,
+    );
+
+    document.querySelector<HTMLTextAreaElement>("#personal-note")!.value = "再次预览";
+    document.querySelector<HTMLButtonElement>("#preview-note-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#note-preview-panel")?.hidden).toBe(false);
+    });
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    expect(document.querySelector<HTMLButtonElement>("#commit-note-button")?.disabled).toBe(
+      true,
+    );
+  });
+
+  it("keeps selection and personal notes after a commit failure", async () => {
+    setupDom();
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot })
+      .mockResolvedValueOnce({
+        ok: true,
+        response: {
+          proposalId: "proposal-1",
+          action: "append",
+          noteId: "learnflow-1",
+          targetRelativePath: "LearnFlow/example.com/tutorial--hash.md",
+          markdownPreview: "# Tutorial",
+          diff: "",
+          expectedRevision: "sha256:old",
+          expiresAt: "2026-10-11T20:00:00Z",
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        error: { code: "NOTE_CONFLICT", message: "目标笔记发生冲突，请重新预览。" },
+      });
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#selection-panel")?.hidden).toBe(false);
+    });
+    const checkbox = document.querySelector<HTMLInputElement>("#block-list input")!;
+    checkbox.click();
+    const note = document.querySelector<HTMLTextAreaElement>("#personal-note")!;
+    note.value = "保留这段笔记";
+    note.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector<HTMLButtonElement>("#preview-note-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#note-preview-panel")?.hidden).toBe(false);
+    });
+    document.querySelector<HTMLButtonElement>("#commit-note-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#note-status")?.textContent).toContain(
+        "冲突",
+      );
+    });
+
+    expect(checkbox.checked).toBe(true);
+    expect(note.value).toBe("保留这段笔记");
+    expect(document.querySelector<HTMLButtonElement>("#commit-note-button")?.disabled).toBe(
+      true,
+    );
+  });
+
+  it("invalidates an expired proposal and requires a new preview", async () => {
+    setupDom();
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot })
+      .mockResolvedValueOnce({
+        ok: true,
+        response: {
+          proposalId: "expired-proposal",
+          action: "create",
+          noteId: "learnflow-1",
+          targetRelativePath: "LearnFlow/example.md",
+          markdownPreview: "# Note",
+          diff: "+# Note",
+          expectedRevision: null,
+          expiresAt: "2026-10-11T20:00:00Z",
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        error: {
+          code: "PROPOSAL_EXPIRED",
+          message: "预览提案已过期，请重新生成预览。",
+        },
+      });
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#selection-panel")?.hidden).toBe(false);
+    });
+    document.querySelector<HTMLInputElement>("#block-list input")?.click();
+    document.querySelector<HTMLButtonElement>("#preview-note-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#note-preview-panel")?.hidden).toBe(false);
+    });
+    document.querySelector<HTMLButtonElement>("#commit-note-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#note-status")?.textContent).toContain(
+        "过期",
+      );
+    });
+
+    expect(document.querySelector<HTMLElement>("#note-preview-panel")?.hidden).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>("#commit-note-button")?.disabled).toBe(
+      true,
+    );
+  });
+
+  it("shows noop preview without enabling the commit action", async () => {
+    setupDom();
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot })
+      .mockResolvedValueOnce({
+        ok: true,
+        response: {
+          proposalId: "proposal-1",
+          action: "noop",
+          noteId: "learnflow-1",
+          targetRelativePath: "LearnFlow/example.com/tutorial--hash.md",
+          markdownPreview: "# Tutorial",
+          diff: "",
+          expectedRevision: "sha256:same",
+          expiresAt: "2026-10-11T20:00:00Z",
+        },
+      });
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#selection-panel")?.hidden).toBe(false);
+    });
+    document.querySelector<HTMLInputElement>("#block-list input")?.click();
+    document.querySelector<HTMLButtonElement>("#preview-note-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#note-status")?.textContent).toBe(
+        "当前内容无需写入",
+      );
+    });
+
+    expect(document.querySelector<HTMLButtonElement>("#commit-note-button")?.disabled).toBe(
+      true,
+    );
+    document.querySelector<HTMLButtonElement>("#commit-note-button")?.click();
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it("prevents duplicate preview requests while one is pending", async () => {
+    setupDom();
+    let resolvePreview: (value: unknown) => void = () => undefined;
+    const pendingPreview = new Promise<unknown>((resolve) => {
+      resolvePreview = resolve;
+    });
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot })
+      .mockReturnValueOnce(pendingPreview);
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#selection-panel")?.hidden).toBe(false);
+    });
+    document.querySelector<HTMLInputElement>("#block-list input")?.click();
+    const previewButton = document.querySelector<HTMLButtonElement>(
+      "#preview-note-button",
+    )!;
+    previewButton.click();
+    previewButton.click();
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+
+    resolvePreview({
+      ok: true,
+      response: {
+        proposalId: "proposal-1",
+        action: "create",
+        noteId: "learnflow-1",
+        targetRelativePath: "LearnFlow/example.md",
+        markdownPreview: "# Note",
+        diff: "+# Note",
+        expectedRevision: null,
+        expiresAt: "2026-10-11T20:00:00Z",
+      },
+    });
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#note-preview-panel")?.hidden).toBe(false);
+    });
+  });
+
+  it("shows preview errors instead of keeping the status inside a hidden panel", async () => {
+    setupDom();
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot })
+      .mockResolvedValueOnce({
+        ok: false,
+        error: {
+          code: "VAULT_NOT_CONFIGURED",
+          message: "本地服务尚未配置 Obsidian Vault。",
+        },
+      });
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#selection-panel")?.hidden).toBe(false);
+    });
+    document.querySelector<HTMLInputElement>("#block-list input")?.click();
+    document.querySelector<HTMLButtonElement>("#preview-note-button")?.click();
+
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#note-status")?.textContent).toBe(
+        "本地服务尚未配置 Obsidian Vault。",
+      );
+    });
+    expect(document.querySelector<HTMLElement>("#note-preview-panel")?.hidden).toBe(false);
+    expect(document.querySelector<HTMLButtonElement>("#commit-note-button")?.disabled).toBe(
+      true,
+    );
+  });
+
+  it("ignores a delayed preview response after the selection state changes", async () => {
+    setupDom();
+    let resolvePreview: (value: unknown) => void = () => undefined;
+    const pendingPreview = new Promise<unknown>((resolve) => {
+      resolvePreview = resolve;
+    });
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot })
+      .mockReturnValueOnce(pendingPreview);
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#selection-panel")?.hidden).toBe(false);
+    });
+    document.querySelector<HTMLInputElement>("#block-list input")?.click();
+    document.querySelector<HTMLButtonElement>("#preview-note-button")?.click();
+    document.querySelector<HTMLTextAreaElement>("#personal-note")!.value = "新状态";
+    document
+      .querySelector<HTMLTextAreaElement>("#personal-note")
+      ?.dispatchEvent(new Event("input", { bubbles: true }));
+
+    resolvePreview({
+      ok: true,
+      response: {
+        proposalId: "stale-proposal",
+        action: "create",
+        noteId: "learnflow-1",
+        targetRelativePath: "LearnFlow/example.md",
+        markdownPreview: "stale markdown",
+        diff: "+stale",
+        expectedRevision: null,
+        expiresAt: "2026-10-11T20:00:00Z",
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(document.querySelector<HTMLElement>("#note-preview-panel")?.hidden).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>("#commit-note-button")?.disabled).toBe(
+      true,
+    );
+    expect(document.querySelector<HTMLElement>("#markdown-preview")?.textContent).toBe("");
+  });
+
+  it("does not let a delayed commit response overwrite a new capture", async () => {
+    setupDom();
+    let resolveCommit: (value: unknown) => void = () => undefined;
+    const pendingCommit = new Promise<unknown>((resolve) => {
+      resolveCommit = resolve;
+    });
+    const previewResponse = {
+      ok: true,
+      response: {
+        proposalId: "proposal-1",
+        action: "create",
+        noteId: "learnflow-1",
+        targetRelativePath: "LearnFlow/example.md",
+        markdownPreview: "# Note",
+        diff: "+# Note",
+        expectedRevision: null,
+        expiresAt: "2026-10-11T20:00:00Z",
+      },
+    } as const;
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot })
+      .mockResolvedValueOnce(previewResponse)
+      .mockReturnValueOnce(pendingCommit)
+      .mockResolvedValueOnce({ ok: true, snapshot });
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#selection-panel")?.hidden).toBe(false);
+    });
+    document.querySelector<HTMLInputElement>("#block-list input")?.click();
+    document.querySelector<HTMLButtonElement>("#preview-note-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#note-preview-panel")?.hidden).toBe(false);
+    });
+    document.querySelector<HTMLButtonElement>("#commit-note-button")?.click();
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#capture-status")?.textContent).toBe(
+        "采集完成",
+      );
+    });
+
+    resolveCommit({
+      ok: true,
+      response: {
+        status: "created",
+        noteId: "learnflow-1",
+        targetRelativePath: "LearnFlow/example.md",
+        revision: "sha256:old",
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(document.querySelector<HTMLElement>("#note-status")?.textContent).toBe(
+      "需要先生成预览",
+    );
+    expect(document.querySelector<HTMLElement>("#note-preview-panel")?.hidden).toBe(true);
   });
 });

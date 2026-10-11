@@ -19,6 +19,30 @@
         <p id="capture-status" class="capture-status" role="status">等待操作</p>
       </section>
 
+      <section id="selection-panel" class="selection-card" aria-labelledby="selection-title" hidden>
+        <h2 id="selection-title">选择教程内容</h2>
+        <p id="selection-count" class="capture-status">已选择 0 个内容块</p>
+        <div id="block-list" class="block-list"></div>
+        <label class="field-label" for="personal-note">个人学习笔记（可选）</label>
+        <textarea id="personal-note" rows="4" placeholder="记录你的理解、疑问或下一步行动"></textarea>
+        <button id="preview-note-button" type="button" disabled>
+          生成 Markdown 预览
+        </button>
+      </section>
+
+      <section id="note-preview-panel" class="note-preview-card" aria-labelledby="note-preview-title" hidden>
+        <h2 id="note-preview-title">Markdown 预览</h2>
+        <p id="note-action" class="capture-status"></p>
+        <p id="note-path" class="path-preview"></p>
+        <pre id="markdown-preview" class="content-preview"></pre>
+        <details>
+          <summary>查看 Diff</summary>
+          <pre id="markdown-diff" class="content-preview"></pre>
+        </details>
+        <button id="commit-note-button" type="button" disabled>确认保存</button>
+        <p id="note-status" class="capture-status" role="status">需要先生成预览</p>
+      </section>
+
       <section id="result-panel" class="result-panel" aria-labelledby="result-title" hidden>
         <h2 id="result-title">采集结果</h2>
         <dl class="page-details">

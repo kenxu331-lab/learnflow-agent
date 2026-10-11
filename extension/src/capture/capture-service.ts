@@ -80,6 +80,10 @@ function isContentBlock(value: unknown): value is ContentBlock {
     typeof value.text === "string" &&
     typeof blockType === "string" &&
     ["heading", "paragraph", "code", "list"].includes(blockType) &&
+    (!("stableKey" in value) ||
+      (typeof value.stableKey === "string" &&
+        value.stableKey.trim().length > 0 &&
+        value.stableKey.length <= 200)) &&
     (!("level" in value) ||
       (typeof level === "number" &&
         Number.isSafeInteger(level) &&

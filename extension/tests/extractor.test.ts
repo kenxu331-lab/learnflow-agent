@@ -97,4 +97,50 @@ describe("extractPageSnapshot", () => {
       "正文字符数已达到上限，结果已截断。",
     );
   });
+
+  it("keeps persistence keys stable when a block is inserted before existing content", () => {
+    document.body.innerHTML = `
+      <article>
+        <p>Existing introduction.</p>
+        <p>Existing details.</p>
+      </article>
+    `;
+    const before = extractPageSnapshot();
+
+    document.body.innerHTML = `
+      <article>
+        <h2>New preface.</h2>
+        <p>Existing introduction.</p>
+        <p>Existing details.</p>
+      </article>
+    `;
+    const after = extractPageSnapshot();
+
+    const beforeKeys = new Map(before.blocks.map((block) => [block.text, block.stableKey]));
+    const afterIds = new Map(after.blocks.map((block) => [block.text, block.id]));
+    expect(beforeKeys.get("Existing introduction.")).toBe(
+      after.blocks.find((block) => block.text === "Existing introduction.")?.stableKey,
+    );
+    expect(beforeKeys.get("Existing details.")).toBe(
+      after.blocks.find((block) => block.text === "Existing details.")?.stableKey,
+    );
+    expect(afterIds.get("Existing introduction.")).not.toBe("block-1");
+  });
+
+  it("distinguishes repeated blocks with the same text", () => {
+    document.body.innerHTML = `
+      <article>
+        <p>Repeat this sentence.</p>
+        <p>Repeat this sentence.</p>
+      </article>
+    `;
+
+    const snapshot = extractPageSnapshot();
+    const repeated = snapshot.blocks.filter(
+      (block) => block.text === "Repeat this sentence.",
+    );
+
+    expect(repeated).toHaveLength(2);
+    expect(repeated[0].stableKey).not.toBe(repeated[1].stableKey);
+  });
 });

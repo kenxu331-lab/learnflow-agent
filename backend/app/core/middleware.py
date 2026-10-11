@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import json
+import re
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 INGEST_PATH = "/api/v1/pages/ingest"
+SECURED_POST_PATHS = {
+    INGEST_PATH,
+    "/api/v1/notes/preview",
+    "/api/v1/notes/commit",
+}
 
 
 async def send_json_error(
@@ -88,7 +94,9 @@ class LocalRequestMiddleware:
             parsed = urlsplit(origin)
         except ValueError:
             return False
-        if parsed.scheme == "chrome-extension" and bool(parsed.netloc):
+        if parsed.scheme == "chrome-extension" and re.fullmatch(
+            r"[a-p]{32}", parsed.netloc
+        ):
             return True
         return (
             parsed.scheme in {"http", "https"}
@@ -96,7 +104,7 @@ class LocalRequestMiddleware:
         )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or scope.get("path") != INGEST_PATH:
+        if scope["type"] != "http" or scope.get("path") not in SECURED_POST_PATHS:
             await self.app(scope, receive, send)
             return
 
@@ -143,7 +151,7 @@ class RequestSizeLimitMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if (
             scope["type"] != "http"
-            or scope.get("path") != INGEST_PATH
+            or scope.get("path") not in SECURED_POST_PATHS
             or scope.get("method") != "POST"
         ):
             await self.app(scope, receive, send)
