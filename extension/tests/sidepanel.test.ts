@@ -131,4 +131,60 @@ describe("side panel visibility state", () => {
       "Tutorial text.",
     );
   });
+
+  it("configures trusted storage before saving a token", async () => {
+    setupDom();
+    const setAccessLevel = vi.fn().mockResolvedValue(undefined);
+    const set = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage: vi.fn() },
+      storage: {
+        local: {
+          get: vi.fn().mockResolvedValue({}),
+          setAccessLevel,
+          set,
+        },
+      },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLInputElement>("#api-token")!.value = "new-token";
+    document.querySelector<HTMLButtonElement>("#save-token-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#connection-status")?.textContent).toBe(
+        "Token 已保存",
+      );
+    });
+
+    expect(setAccessLevel).toHaveBeenCalledWith({
+      accessLevel: "TRUSTED_CONTEXTS",
+    });
+    expect(set).toHaveBeenCalledWith({ localApiToken: "new-token" });
+  });
+
+  it("does not save a token when trusted storage configuration fails", async () => {
+    setupDom();
+    const set = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage: vi.fn() },
+      storage: {
+        local: {
+          get: vi.fn().mockResolvedValue({}),
+          setAccessLevel: vi.fn().mockRejectedValue(new Error("not allowed")),
+          set,
+        },
+      },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLInputElement>("#api-token")!.value = "new-token";
+    document.querySelector<HTMLButtonElement>("#save-token-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#connection-status")?.textContent).toBe(
+        "无法启用本地存储安全配置，Token 未保存",
+      );
+    });
+
+    expect(set).not.toHaveBeenCalled();
+  });
 });

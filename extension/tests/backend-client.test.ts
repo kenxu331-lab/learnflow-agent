@@ -91,6 +91,31 @@ describe("backend HTTP client", () => {
     });
   });
 
+  it.each([
+    ["null stats", { ...backendResponse, stats: null }],
+    ["array stats", { ...backendResponse, stats: [] }],
+    [
+      "wrong stat type",
+      { ...backendResponse, stats: { ...snapshot.stats, blockCount: "1" } },
+    ],
+    ["empty request id", { ...backendResponse, requestId: "   " }],
+    ["negative stat", { ...backendResponse, stats: { ...snapshot.stats, blockCount: -1 } }],
+  ] as const)("rejects malformed HTTP 200 response: %s", async (_name, body) => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    const result = await ingestPageSnapshot(snapshot);
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "INVALID_RESPONSE" },
+    });
+  });
+
   it("maps an abort to a timeout", async () => {
     fetchMock.mockRejectedValue(new DOMException("aborted", "AbortError"));
 

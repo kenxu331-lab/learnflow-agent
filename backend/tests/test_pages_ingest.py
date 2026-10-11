@@ -1,11 +1,16 @@
 """Tests for local authenticated page snapshot ingestion."""
 
+import asyncio
 import json
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
-from app.core.config import get_settings
+from app.core.auth import require_local_token
+from app.core.config import Settings, get_settings
+from app.core.middleware import INGEST_PATH, RequestSizeLimitMiddleware
 from app.main import app
 
 client = TestClient(app)
@@ -92,10 +97,11 @@ def test_missing_or_wrong_token_returns_401(authorization: str | None) -> None:
 
 
 def test_unconfigured_token_returns_401(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("LEARNFLOW_LOCAL_API_TOKEN", raising=False)
-    get_settings.cache_clear()
-
-    response = post_snapshot(snapshot_payload())
+    app.dependency_overrides[get_settings] = lambda: Settings(local_api_token=None)
+    try:
+        response = post_snapshot(snapshot_payload())
+    finally:
+        app.dependency_overrides.clear()
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "local_token_not_configured"
@@ -154,3 +160,96 @@ def test_health_is_unchanged_without_authentication() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_non_local_host_is_rejected() -> None:
+    response = post_snapshot(snapshot_payload(), Host="example.com:8000")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_host"
+
+
+def test_invalid_origin_is_rejected() -> None:
+    response = post_snapshot(snapshot_payload(), Origin="https://evil.example")
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "invalid_origin"
+
+
+def test_chrome_extension_preflight_is_allowed() -> None:
+    origin = "chrome-extension://" + ("a" * 32)
+    response = client.options(
+        "/api/v1/pages/ingest",
+        headers={
+            "Host": "127.0.0.1:8000",
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+
+    assert response.status_code in {200, 204}
+    assert response.headers["access-control-allow-origin"] == origin
+
+
+def test_non_ascii_bearer_token_returns_401_not_500() -> None:
+    request = Request(
+        {
+            "type": "http",
+            "headers": [
+                (b"authorization", "Bearer 密钥😀".encode()),
+            ],
+        }
+    )
+
+    with pytest.raises(HTTPException) as exception:
+        require_local_token(request, Settings(local_api_token=TOKEN))
+
+    assert exception.value.status_code == 401
+
+
+def test_streaming_body_limit_without_content_length() -> None:
+    async def run_test() -> list[dict[str, object]]:
+        events: list[dict[str, object]] = []
+        downstream_called = False
+        messages = iter(
+            [
+                {
+                    "type": "http.request",
+                    "body": b"12345",
+                    "more_body": True,
+                },
+                {
+                    "type": "http.request",
+                    "body": b"67890X",
+                    "more_body": False,
+                },
+            ]
+        )
+
+        async def receive() -> dict[str, object]:
+            return next(messages)
+
+        async def send(message: dict[str, object]) -> None:
+            events.append(message)
+
+        async def downstream(scope, receive, send) -> None:
+            nonlocal downstream_called
+            downstream_called = True
+
+        app = RequestSizeLimitMiddleware(downstream, max_bytes=10)
+        await app(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": INGEST_PATH,
+                "headers": [(b"content-type", b"application/json")],
+            },
+            receive,
+            send,
+        )
+        assert downstream_called is False
+        return events
+
+    events = asyncio.run(run_test())
+    assert events[0]["status"] == 413

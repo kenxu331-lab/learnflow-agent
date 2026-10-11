@@ -16,21 +16,32 @@ function failure(
   return { ok: false, error: { code, message } };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
 function isBackendIngestResponse(value: unknown): value is BackendIngestResponse {
-  if (typeof value !== "object" || value === null) {
+  if (!isRecord(value)) {
     return false;
   }
 
-  const response = value as Record<string, unknown>;
-  const stats = response.stats as Record<string, unknown> | undefined;
+  const stats = value.stats;
+  if (!isRecord(stats)) {
+    return false;
+  }
+
   return (
-    response.status === "validated" &&
-    typeof response.requestId === "string" &&
-    response.schemaVersion === 1 &&
-    stats !== undefined &&
-    typeof stats.characterCount === "number" &&
-    typeof stats.codeBlockCount === "number" &&
-    typeof stats.blockCount === "number"
+    value.status === "validated" &&
+    typeof value.requestId === "string" &&
+    value.requestId.trim().length > 0 &&
+    value.schemaVersion === 1 &&
+    isNonNegativeSafeInteger(stats.characterCount) &&
+    isNonNegativeSafeInteger(stats.codeBlockCount) &&
+    isNonNegativeSafeInteger(stats.blockCount)
   );
 }
 

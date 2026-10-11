@@ -3,6 +3,7 @@ import {
   setCaptureTarget,
 } from "./capture/capture-service";
 import { ingestPageSnapshot } from "./backend/api-client";
+import { ensureTrustedStorageAccess } from "./backend/storage";
 import {
   isPageIngestRequest,
   type BackendClientResult,
@@ -72,13 +73,9 @@ export function registerBackendMessageHandler(): void {
 }
 
 async function configureStorageAccess(): Promise<void> {
-  try {
-    await chrome.storage.local.setAccessLevel({
-      accessLevel: "TRUSTED_CONTEXTS",
-    });
-  } catch (error) {
+  if (!(await ensureTrustedStorageAccess())) {
     console.warn("[LearnFlow backend] storage-access-config-failed", {
-      errorType: error instanceof Error ? error.name : typeof error,
+      reason: "setAccessLevel_failed",
     });
   }
 }

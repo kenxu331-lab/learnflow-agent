@@ -6,6 +6,7 @@ import {
   type PageSnapshot,
 } from "../capture/types";
 import { LOCAL_INGEST_URL } from "../backend/api-client";
+import { ensureTrustedStorageAccess } from "../backend/storage";
 import {
   PAGE_INGEST_REQUEST,
   type BackendClientResult,
@@ -137,6 +138,11 @@ async function saveToken(): Promise<void> {
 
   saveTokenButton.disabled = true;
   try {
+    if (!(await ensureTrustedStorageAccess())) {
+      connectionStatus.textContent =
+        "无法启用本地存储安全配置，Token 未保存";
+      return;
+    }
     await chrome.storage.local.set({ localApiToken: token });
     connectionStatus.textContent = "Token 已保存";
   } catch {

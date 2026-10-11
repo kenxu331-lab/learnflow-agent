@@ -25,12 +25,15 @@ def require_local_token(
 
     authorization = request.headers.get("authorization", "")
     scheme, separator, provided_token = authorization.partition(" ")
-    if (
-        separator != " "
-        or scheme.lower() != "bearer"
-        or not provided_token
-        or not compare_digest(provided_token, configured_token)
-    ):
+    try:
+        token_matches = bool(provided_token) and compare_digest(
+            provided_token,
+            configured_token,
+        )
+    except (TypeError, UnicodeError):
+        token_matches = False
+
+    if separator != " " or scheme.lower() != "bearer" or not token_matches:
         raise HTTPException(
             status_code=401,
             detail={"code": "invalid_local_token", "message": "本地访问密钥无效。"},
