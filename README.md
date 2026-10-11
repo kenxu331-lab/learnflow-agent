@@ -2,7 +2,7 @@
 
 LearnFlow Agent 是一个本地优先的 AI 学习助手。它将理解学习上下文、调用工具、维护学习记忆，并把学习成果沉淀到 Obsidian。
 
-本仓库当前完成 M00-01 工程初始化，暂不包含业务 API、数据库、向量库、OCR 或 LLM SDK。
+本仓库当前完成 M00-02 基础服务，暂不包含数据库、向量库、OCR 或 LLM SDK。
 
 ## 技术栈
 
@@ -17,6 +17,10 @@ LearnFlow Agent 是一个本地优先的 AI 学习助手。它将理解学习上
 .
 ├── backend/              # 独立 uv Python 项目
 │   ├── app/__init__.py
+│   ├── app/main.py
+│   ├── app/api/health.py
+│   ├── app/core/config.py
+│   ├── tests/test_health.py
 │   ├── pyproject.toml
 │   └── uv.lock
 ├── extension/            # 独立 npm/Vite Chrome 扩展项目
@@ -47,10 +51,15 @@ LearnFlow Agent 是一个本地优先的 AI 学习助手。它将理解学习上
 Set-Location backend
 uv sync
 uv run ruff check .
+uv run pytest
 uv run python -c "import fastapi, pydantic; print(f'FastAPI {fastapi.__version__}; Pydantic {pydantic.__version__}')"
+uv run uvicorn app.main:app --reload
 ```
 
-当前阶段没有 API 服务入口，因此不启动 Uvicorn。
+服务启动后可访问：
+
+- 健康检查：`http://127.0.0.1:8000/health`
+- Swagger UI：`http://127.0.0.1:8000/docs`
 
 ### 浏览器扩展
 
@@ -66,4 +75,4 @@ npm run build
 
 ## 当前范围
 
-M00-01 只负责可重复的工程骨架、依赖锁定、基础检查和扩展加载入口。后续阶段再加入 API、Agent 工具处理器、记忆存储、Obsidian 同步与学习流程。
+M00-01 负责可重复的工程骨架、依赖锁定、基础检查和扩展加载入口。M00-02 增加 FastAPI 配置、健康检查和自动化测试。后续阶段再加入 Agent 工具处理器、记忆存储、Obsidian 同步与学习流程。

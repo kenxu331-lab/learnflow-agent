@@ -1,6 +1,6 @@
 # LearnFlow Agent 当前架构
 
-## 当前状态（M00-01）
+## 当前状态（M00-02）
 
 项目采用前后端分离的本地优先结构：`backend/` 与 `extension/` 是两个独立的工程单元，各自维护依赖和构建流程。
 
@@ -8,21 +8,22 @@
 Chrome Side Panel (extension/dist)
         │  后续通过本地 HTTP API 通信
         ▼
-FastAPI backend (backend/app)
+FastAPI backend (backend/app/main.py)
         │
+        ├── /health（当前）
         ├── TOOL_HANDLERS（后续实现）
         ├── 学习上下文与记忆（后续实现）
         ├── SQLite 元数据（后续实现）
         └── Obsidian Markdown（后续实现）
 ```
 
-本阶段只提供构建和加载骨架，不创建 API、数据库或 Agent 业务逻辑。
+本阶段提供可运行的 FastAPI 应用入口、环境配置、健康检查和测试；暂不创建数据库或 Agent 业务逻辑。
 
 ## 模块边界
 
 ### `backend/`
 
-独立的 Python 3.12 uv 项目。FastAPI、Uvicorn 和 Pydantic 已声明为运行时依赖，Ruff 作为开发检查工具。`app/` 是后端 Python 包的边界，后续 API 路由、服务和工具处理器都应放在这里，避免把业务代码散落到仓库根目录。
+独立的 Python 3.12 uv 项目。FastAPI、Uvicorn、Pydantic 和 Pydantic Settings 已声明为运行时依赖，Pytest、HTTPX 和 Ruff 作为开发检查工具。`app/main.py` 创建 FastAPI 应用，`app/api/` 保存路由，`app/core/` 保存配置；后续服务和工具处理器都应放在后端包内，避免把业务代码散落到仓库根目录。`tests/` 使用 FastAPI TestClient 覆盖 HTTP 行为。
 
 ### `extension/`
 
@@ -36,7 +37,7 @@ FastAPI backend (backend/app)
 
 ## 后续计划
 
-1. 定义后端健康检查和最小本地 API，建立扩展到后端的通信约定。
+1. 建立扩展到后端的请求、错误和本地服务通信约定。
 2. 增加学习上下文、任务编排和自研 `TOOL_HANDLERS`，保持 Agent 实现不依赖 LangChain。
 3. 引入 SQLite 元数据层与 Obsidian Markdown 存储适配器，并补充迁移和错误处理。
 4. 为浏览器侧增加页面上下文采集、用户确认流程和端到端测试；权限随具体能力最小化增加。
