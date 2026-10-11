@@ -99,7 +99,7 @@ ipython_config.py
 #   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
 #   This is especially recommended for binary packages to ensure reproducibility, and is more
 #   commonly ignored for libraries.
-# uv.lock
+# Keep uv.lock tracked so backend installs remain reproducible.
 
 # poetry
 #   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
@@ -151,6 +151,8 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+!.env.example
 .envrc
 .venv
 env/
@@ -207,6 +209,33 @@ tempCodeRunnerFile.py
 
 # Ruff stuff:
 .ruff_cache/
+
+# Node.js / Vite
+node_modules/
+extension/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local configuration and application state
+*.local
+*.db
+*.sqlite
+*.sqlite3
+
+# Obsidian private vaults
+vault/
+obsidian-vault/
+*.obsidian/
+
+# Private data and credentials
+private/
+secrets/
+credentials*.json
+*.key
+*.pem
+*.secret
 
 # PyPI configuration file
 .pypirc

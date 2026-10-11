@@ -1,0 +1,22 @@
+{
+  "name": "learnflow-extension",
+  "private": true,
+  "version": "0.1.0",
+  "description": "LearnFlow Agent Chrome side panel extension.",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/chrome": "^0.0.270",
+    "@types/node": "^22.0.0",
+    "eslint": "^9.0.0",
+    "globals": "^15.0.0",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.0.0",
+    "vite": "^7.0.0"
+  }
+}
