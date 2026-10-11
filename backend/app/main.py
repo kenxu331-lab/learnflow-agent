@@ -5,6 +5,7 @@ from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.health import router as health_router
+from app.api.notes import router as notes_router
 from app.api.pages import router as pages_router
 from app.core.config import get_settings
 from app.core.errors import http_exception_handler, validation_exception_handler
@@ -25,7 +26,7 @@ app.add_exception_handler(HTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^chrome-extension://[^/]+$",
+    allow_origin_regex=r"^chrome-extension://[a-p]{32}$",
     allow_credentials=False,
     allow_methods=["POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
@@ -38,3 +39,4 @@ app.add_middleware(
 )
 app.include_router(health_router)
 app.include_router(pages_router)
+app.include_router(notes_router)

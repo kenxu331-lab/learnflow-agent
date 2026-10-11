@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     local_port: int = 8000
     local_api_token: str | None = None
     max_request_bytes: int = 512 * 1024
+    vault_path: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -2,6 +2,8 @@ export type BlockType = "heading" | "paragraph" | "code" | "list";
 
 export interface ContentBlock {
   id: string;
+  /** Stable persistence hint; id remains the per-capture UI/message identity. */
+  stableKey?: string;
   type: BlockType;
   text: string;
   level?: number;

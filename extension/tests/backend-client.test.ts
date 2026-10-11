@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ingestPageSnapshot } from "../src/backend/api-client";
+import {
+  commitNote,
+  ingestPageSnapshot,
+  previewNote,
+} from "../src/backend/api-client";
 import type { PageSnapshot } from "../src/capture/types";
 
 const snapshot: PageSnapshot = {
@@ -91,6 +95,88 @@ describe("backend HTTP client", () => {
     });
   });
 
+  it("constructs a preview request with the snapshot and selected IDs", async () => {
+    const response = {
+      proposalId: "proposal-1",
+      action: "create",
+      noteId: "learnflow-1",
+      targetRelativePath: "LearnFlow/example.com/tutorial--hash.md",
+      markdownPreview: "# Tutorial",
+      diff: "+# Tutorial",
+      expectedRevision: null,
+      expiresAt: "2026-10-11T20:00:00Z",
+    } as const;
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(response), { status: 200 }),
+    );
+
+    const payload = {
+      snapshot,
+      selectedBlockIds: ["block-1"],
+      personalNote: "理解",
+    };
+    const result = await previewNote(payload);
+
+    expect(result).toEqual({ ok: true, response });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/notes/preview",
+      expect.objectContaining({ body: JSON.stringify(payload) }),
+    );
+  });
+
+  it("sends only the proposal ID when committing a note", async () => {
+    const response = {
+      status: "created",
+      noteId: "learnflow-1",
+      targetRelativePath: "LearnFlow/example.com/tutorial--hash.md",
+      revision: "sha256:revision",
+    } as const;
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(response), { status: 200 }),
+    );
+
+    const result = await commitNote("proposal-1");
+
+    expect(result).toEqual({ ok: true, response });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/notes/commit",
+      expect.objectContaining({
+        body: JSON.stringify({ proposalId: "proposal-1" }),
+      }),
+    );
+  });
+
+  it.each([
+    [409, "NOTE_CONFLICT"],
+    [410, "PROPOSAL_EXPIRED"],
+  ] as const)("maps note HTTP %s to %s", async (status, code) => {
+    fetchMock.mockResolvedValue(new Response("", { status }));
+
+    const result = await commitNote("proposal-1");
+
+    expect(result).toMatchObject({ ok: false, error: { code } });
+  });
+
+  it("distinguishes an unconfigured Vault response", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: { code: "vault_not_configured" } }),
+        { status: 503 },
+      ),
+    );
+
+    const result = await previewNote({
+      snapshot,
+      selectedBlockIds: ["block-1"],
+      personalNote: "",
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "VAULT_NOT_CONFIGURED" },
+    });
+  });
+
   it.each([
     ["null stats", { ...backendResponse, stats: null }],
     ["array stats", { ...backendResponse, stats: [] }],
@@ -109,6 +195,40 @@ describe("backend HTTP client", () => {
     );
 
     const result = await ingestPageSnapshot(snapshot);
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "INVALID_RESPONSE" },
+    });
+  });
+
+  it.each([
+    ["null preview response", null],
+    ["array preview response", []],
+    ["blank proposal id", { proposalId: " " }],
+    [
+      "blank expected revision",
+      {
+        proposalId: "proposal-1",
+        action: "append",
+        noteId: "learnflow-1",
+        targetRelativePath: "LearnFlow/example.md",
+        markdownPreview: "# Note",
+        diff: "",
+        expectedRevision: " ",
+        expiresAt: "2026-10-11T20:00:00Z",
+      },
+    ],
+  ] as const)("rejects malformed note preview response: %s", async (_name, body) => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(body), { status: 200 }),
+    );
+
+    const result = await previewNote({
+      snapshot,
+      selectedBlockIds: ["block-1"],
+      personalNote: "",
+    });
 
     expect(result).toMatchObject({
       ok: false,
