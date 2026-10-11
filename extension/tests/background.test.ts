@@ -13,6 +13,7 @@ describe("background action handling", () => {
     vi.stubGlobal("chrome", {
       action: { onClicked: { addListener: onClicked } },
       sidePanel: { open: sidePanelOpen },
+      storage: { local: { setAccessLevel: vi.fn().mockResolvedValue(undefined) } },
       runtime: { onMessage: { addListener: onMessage } },
     });
 

@@ -2,7 +2,7 @@
 
 LearnFlow Agent 是一个本地优先的 AI 学习助手。它将理解学习上下文、调用工具、维护学习记忆，并把学习成果沉淀到 Obsidian。
 
-本仓库当前完成 M01-01 单页教程采集，暂不包含数据库、向量库、OCR 或 LLM SDK。
+本仓库当前完成 M01-02 页面快照到本地 FastAPI 的安全传输，暂不包含数据库、向量库、OCR 或 LLM SDK。
 
 ## 技术栈
 
@@ -19,13 +19,20 @@ LearnFlow Agent 是一个本地优先的 AI 学习助手。它将理解学习上
 │   ├── app/__init__.py
 │   ├── app/main.py
 │   ├── app/api/health.py
+│   ├── app/api/pages.py
 │   ├── app/core/config.py
+│   ├── app/core/auth.py
+│   ├── app/core/middleware.py
+│   ├── app/schemas/page_snapshot.py
+│   ├── .env.example
 │   ├── tests/test_health.py
+│   ├── tests/test_pages_ingest.py
 │   ├── pyproject.toml
 │   └── uv.lock
 ├── extension/            # 独立 npm/Vite Chrome 扩展项目
 │   ├── public/manifest.json
 │   ├── src/capture/
+│   ├── src/backend/
 │   ├── src/background.ts
 │   ├── src/sidepanel/
 │   ├── tests/
@@ -55,13 +62,21 @@ uv sync
 uv run ruff check .
 uv run pytest
 uv run python -c "import fastapi, pydantic; print(f'FastAPI {fastapi.__version__}; Pydantic {pydantic.__version__}')"
-uv run uvicorn app.main:app --reload
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 服务启动后可访问：
 
 - 健康检查：`http://127.0.0.1:8000/health`
 - Swagger UI：`http://127.0.0.1:8000/docs`
+
+生成本地 Token：
+
+```powershell
+uv run python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+将输出配置为 `backend/.env` 中的 `LEARNFLOW_LOCAL_API_TOKEN=...`。`POST /api/v1/pages/ingest` 使用 `Authorization: Bearer <token>`，未配置或错误 Token 返回 401。
 
 ### 浏览器扩展
 
@@ -84,4 +99,6 @@ npm run build
 
 ## 当前范围
 
-M00-01 负责可重复的工程骨架、依赖锁定、基础检查和扩展加载入口。M00-02 增加 FastAPI 配置、健康检查和自动化测试。M01-01 增加浏览器当前页面的显式单页采集。后续阶段再加入 Agent 工具处理器、学习会话、AI 问答、记忆存储和 Obsidian 同步。
+M00-01 负责可重复的工程骨架、依赖锁定、基础检查和扩展加载入口。M00-02 增加 FastAPI 配置、健康检查和自动化测试。M01-01 增加浏览器当前页面的显式单页采集。M01-02 增加带本地 Token 鉴权的页面快照传输。后续阶段再加入 Agent 工具处理器、学习会话、AI 问答、记忆存储和 Obsidian 同步。
+
+M01-02 的本地服务配置：在 `backend/.env` 设置 `LEARNFLOW_LOCAL_API_TOKEN`，扩展中保存同一个 Token 后，用户可主动点击“发送到本地服务”。服务只返回校验状态和统计摘要，不保存正文；网络、401、422、413 和超时错误会在侧边栏显示。

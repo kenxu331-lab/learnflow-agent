@@ -2,6 +2,12 @@ import {
   registerCaptureMessageHandler,
   setCaptureTarget,
 } from "./capture/capture-service";
+import { ingestPageSnapshot } from "./backend/api-client";
+import { ensureTrustedStorageAccess } from "./backend/storage";
+import {
+  isPageIngestRequest,
+  type BackendClientResult,
+} from "./backend/types";
 
 function getProtocol(value: string | undefined): string | null {
   if (!value) {
@@ -43,5 +49,38 @@ export function registerActionClickHandler(): void {
   });
 }
 
+export function registerBackendMessageHandler(): void {
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (!isPageIngestRequest(message)) {
+      return false;
+    }
+
+    void ingestPageSnapshot(message.snapshot)
+      .then(sendResponse)
+      .catch(() => {
+        const response: BackendClientResult = {
+          ok: false,
+          error: {
+            code: "UNKNOWN_ERROR",
+            message: "本地服务请求失败，请重试。",
+          },
+        };
+        sendResponse(response);
+      });
+
+    return true;
+  });
+}
+
+async function configureStorageAccess(): Promise<void> {
+  if (!(await ensureTrustedStorageAccess())) {
+    console.warn("[LearnFlow backend] storage-access-config-failed", {
+      reason: "setAccessLevel_failed",
+    });
+  }
+}
+
 registerActionClickHandler();
 registerCaptureMessageHandler();
+registerBackendMessageHandler();
+void configureStorageAccess();
