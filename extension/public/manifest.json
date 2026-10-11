@@ -3,7 +3,7 @@
   "name": "LearnFlow Agent",
   "version": "0.1.0",
   "description": "A local-first AI learning agent side panel.",
-  "permissions": ["sidePanel"],
+  "permissions": ["sidePanel", "activeTab", "scripting"],
   "action": {
     "default_title": "Open LearnFlow Agent"
   },
