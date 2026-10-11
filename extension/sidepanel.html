@@ -7,8 +7,52 @@
   </head>
   <body>
     <main class="sidepanel" aria-labelledby="title">
-      <h1 id="title">LearnFlow Agent</h1>
-      <p id="status" role="status">Environment Ready</p>
+      <header class="panel-header">
+        <h1 id="title">LearnFlow Agent</h1>
+        <p id="status" role="status">Environment Ready</p>
+      </header>
+
+      <section class="capture-card" aria-labelledby="capture-title">
+        <h2 id="capture-title">M01-01 单页教程采集</h2>
+        <p class="muted">仅采集当前授权页面，不会修改网页内容。</p>
+        <button id="capture-button" type="button">采集当前页面</button>
+        <p id="capture-status" class="capture-status" role="status">等待操作</p>
+      </section>
+
+      <section id="result-panel" class="result-panel" aria-labelledby="result-title" hidden>
+        <h2 id="result-title">采集结果</h2>
+        <dl class="page-details">
+          <div>
+            <dt>页面标题</dt>
+            <dd id="page-title">—</dd>
+          </div>
+          <div>
+            <dt>页面 URL</dt>
+            <dd id="page-url">—</dd>
+          </div>
+          <div>
+            <dt>正文字符数</dt>
+            <dd id="character-count">0</dd>
+          </div>
+          <div>
+            <dt>代码块数量</dt>
+            <dd id="code-block-count">0</dd>
+          </div>
+        </dl>
+
+        <h3>正文预览</h3>
+        <pre id="content-preview" class="content-preview">—</pre>
+
+        <div id="warning-panel" class="message-panel warning-panel" role="status" hidden>
+          <h3>采集提示</h3>
+          <ul id="warning-list"></ul>
+        </div>
+      </section>
+
+      <div id="error-panel" class="message-panel error-panel" role="alert" hidden>
+        <h2>采集失败</h2>
+        <p id="error-message"></p>
+      </div>
     </main>
     <script type="module" src="/src/sidepanel/main.ts"></script>
   </body>

@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "types": ["chrome", "node"]
   },
-  "include": ["src/**/*.ts", "vite.config.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "vite.config.ts", "vitest.config.ts"]
 }

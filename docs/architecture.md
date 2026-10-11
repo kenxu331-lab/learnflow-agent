@@ -1,23 +1,29 @@
 # LearnFlow Agent 当前架构
 
-## 当前状态（M00-02）
+## 当前状态（M01-01）
 
 项目采用前后端分离的本地优先结构：`backend/` 与 `extension/` 是两个独立的工程单元，各自维护依赖和构建流程。
 
 ```text
-Chrome Side Panel (extension/dist)
-        │  后续通过本地 HTTP API 通信
+Toolbar action
+        │  chrome.action.onClicked → chrome.sidePanel.open({ tabId })
         ▼
+Chrome Side Panel
+        │  PAGE_CAPTURE_REQUEST
+        ▼
+MV3 Background Service Worker
+        │  activeTab + scripting
+        ▼
+当前 HTTP/HTTPS 页面 DOM
+        │  PageSnapshot
+        ▼
+Side Panel 结果展示
+
 FastAPI backend (backend/app/main.py)
-        │
-        ├── /health（当前）
-        ├── TOOL_HANDLERS（后续实现）
-        ├── 学习上下文与记忆（后续实现）
-        ├── SQLite 元数据（后续实现）
-        └── Obsidian Markdown（后续实现）
+        └── /health（当前；M01-01 不调用）
 ```
 
-本阶段提供可运行的 FastAPI 应用入口、环境配置、健康检查和测试；暂不创建数据库或 Agent 业务逻辑。
+M01-01 只做用户显式触发的单页采集和本地展示，不监视标签页、不跨页面跟随、不调用 LLM、不请求 FastAPI、不使用数据库、不写入 Obsidian。
 
 ## 模块边界
 
@@ -27,9 +33,9 @@ FastAPI backend (backend/app/main.py)
 
 ### `extension/`
 
-独立的 TypeScript/Vite 项目。`sidepanel.html` 是 Chrome Side Panel 页面入口，`src/sidepanel/` 负责页面脚本与样式，`src/background.ts` 是 Manifest V3 service worker。`public/manifest.json` 在构建时原样复制到 `dist/`，其中的路径与 Vite 输出保持一致。
+独立的 TypeScript/Vite 项目。`sidepanel.html` 是 Chrome Side Panel 页面入口，`src/sidepanel/` 负责页面脚本与安全渲染，`src/capture/` 定义 `PageSnapshot`、DOM extractor 和采集调度，`src/background.ts` 注册 Manifest V3 service worker 消息处理。`public/manifest.json` 在构建时原样复制到 `dist/`，其中的路径与 Vite 输出保持一致。
 
-当前只申请 `sidePanel` 权限；没有预先申请 `<all_urls>`、标签页读取或其他不属于本阶段的权限。
+当前申请 `sidePanel`、`activeTab` 和 `scripting` 权限，仅在用户点击采集按钮后处理当前标签页；没有申请 `<all_urls>` 或宽泛 Host Permissions。注入函数必须自包含，因为 `chrome.scripting.executeScript({ func })` 不保留外部模块闭包。
 
 ### `docs/`
 
@@ -38,6 +44,6 @@ FastAPI backend (backend/app/main.py)
 ## 后续计划
 
 1. 建立扩展到后端的请求、错误和本地服务通信约定。
-2. 增加学习上下文、任务编排和自研 `TOOL_HANDLERS`，保持 Agent 实现不依赖 LangChain。
+2. 增加学习会话、选中文字上下文和自研 `TOOL_HANDLERS`，保持 Agent 实现不依赖 LangChain。
 3. 引入 SQLite 元数据层与 Obsidian Markdown 存储适配器，并补充迁移和错误处理。
-4. 为浏览器侧增加页面上下文采集、用户确认流程和端到端测试；权限随具体能力最小化增加。
+4. 在明确用户授权后，为浏览器侧增加更丰富的上下文采集和端到端测试；权限随具体能力最小化增加。
