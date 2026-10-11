@@ -12,10 +12,15 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     environment: str = "development"
     debug: bool = False
+    local_host: str = "127.0.0.1"
+    local_port: int = 8000
+    local_api_token: str | None = None
+    max_request_bytes: int = 512 * 1024
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        env_prefix="LEARNFLOW_",
         extra="ignore",
     )
 

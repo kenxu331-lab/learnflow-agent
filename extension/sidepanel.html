@@ -49,6 +49,36 @@
         </div>
       </section>
 
+      <section class="connection-card" aria-labelledby="connection-title">
+        <h2 id="connection-title">本地服务连接</h2>
+        <label class="field-label" for="service-url">服务地址</label>
+        <input
+          id="service-url"
+          type="url"
+          value="http://127.0.0.1:8000/api/v1/pages/ingest"
+          readonly
+        />
+        <label class="field-label" for="api-token">本地 API Token</label>
+        <input
+          id="api-token"
+          type="password"
+          autocomplete="off"
+          placeholder="粘贴本地 Token"
+        />
+        <div class="connection-actions">
+          <button id="save-token-button" type="button" class="secondary-button">
+            保存 Token
+          </button>
+          <button id="send-button" type="button" disabled>
+            发送到本地服务
+          </button>
+        </div>
+        <p id="connection-status" class="capture-status" role="status">
+          尚未配置 Token
+        </p>
+        <p id="send-status" class="capture-status" role="status">等待发送</p>
+      </section>
+
       <div id="error-panel" class="message-panel error-panel" role="alert" hidden>
         <h2>采集失败</h2>
         <p id="error-message"></p>

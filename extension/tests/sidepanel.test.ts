@@ -22,6 +22,12 @@ function setupDom(): void {
       <pre id="content-preview"></pre>
       <div id="warning-panel" hidden><ul id="warning-list"></ul></div>
     </section>
+    <input id="service-url" />
+    <input id="api-token" />
+    <button id="save-token-button" type="button">保存 Token</button>
+    <button id="send-button" type="button" disabled>发送到本地服务</button>
+    <p id="connection-status"></p>
+    <p id="send-status"></p>
     <div id="error-panel" hidden><p id="error-message"></p></div>
   `;
 }
@@ -89,5 +95,40 @@ describe("side panel visibility state", () => {
 
     expect(document.querySelector<HTMLElement>("#error-panel")?.hidden).toBe(true);
     expect(document.querySelector<HTMLElement>("#result-panel")?.hidden).toBe(false);
+  });
+
+  it("keeps the snapshot visible when sending to the backend fails", async () => {
+    setupDom();
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot })
+      .mockResolvedValueOnce({
+        ok: false,
+        error: { code: "NETWORK_ERROR", message: "本地服务不可用" },
+      });
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#capture-status")?.textContent).toBe(
+        "采集完成",
+      );
+    });
+
+    document.querySelector<HTMLButtonElement>("#send-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#send-status")?.textContent).toBe(
+        "本地服务不可用",
+      );
+    });
+
+    expect(document.querySelector<HTMLElement>("#result-panel")?.hidden).toBe(false);
+    expect(document.querySelector<HTMLElement>("#content-preview")?.textContent).toBe(
+      "Tutorial text.",
+    );
   });
 });
