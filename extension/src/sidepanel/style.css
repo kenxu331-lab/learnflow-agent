@@ -25,6 +25,7 @@ body {
 .result-panel,
 .connection-card,
 .selection-card,
+.ai-card,
 .note-preview-card,
 .message-panel {
   display: grid;
@@ -138,6 +139,50 @@ input[readonly] {
 
 .block-option:hover {
   background: #f1f5f9;
+}
+
+.consent-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.5rem;
+  align-items: start;
+  color: #475569;
+  font-size: 0.8rem;
+}
+
+.ai-recommendation-list {
+  display: grid;
+  gap: 0.5rem;
+  max-height: 18rem;
+  overflow: auto;
+}
+
+.ai-recommendation {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.5rem;
+  align-items: start;
+  padding: 0.6rem;
+  border: 1px solid #dbeafe;
+  border-radius: 0.45rem;
+  background: #eff6ff;
+}
+
+.ai-recommendation-content {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+}
+
+.ai-recommendation-reason {
+  color: #1e3a8a;
+  font-weight: 600;
+}
+
+.ai-recommendation-excerpt {
+  color: #475569;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .block-summary {

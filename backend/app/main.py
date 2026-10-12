@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.ai_notes import router as ai_notes_router
 from app.api.health import router as health_router
 from app.api.notes import router as notes_router
 from app.api.pages import router as pages_router
@@ -40,3 +41,4 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(pages_router)
 app.include_router(notes_router)
+app.include_router(ai_notes_router)

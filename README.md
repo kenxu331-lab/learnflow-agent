@@ -2,11 +2,11 @@
 
 LearnFlow Agent 是一个本地优先的 AI 学习助手。它将理解学习上下文、调用工具、维护学习记忆，并把学习成果沉淀到 Obsidian。
 
-本仓库当前完成 M01-03 单页采集、页面快照安全传输，以及用户确认后的 Markdown 笔记保存。暂不包含数据库、向量库、OCR 或 LLM SDK。
+本仓库当前完成 M01-04A 单页采集、页面快照安全传输、AI 重点推荐，以及用户确认后的 Markdown 笔记保存。暂不包含数据库、向量库、OCR、Agent Loop 或 AI 结构化笔记生成。
 
 ## 技术栈
 
-- 后端：Python 3.12、uv、FastAPI、Uvicorn、Pydantic、Ruff
+- 后端：Python 3.12、uv、FastAPI、Uvicorn、Pydantic、OpenAI-compatible SDK、Ruff
 - 浏览器扩展：TypeScript、Vite、Chrome Manifest V3、Side Panel API、原生 HTML/CSS
 - 计划中的存储：Obsidian Markdown + SQLite
 - 计划中的 Agent：自研 `TOOL_HANDLERS`，不使用 LangChain
@@ -24,6 +24,8 @@ LearnFlow Agent 是一个本地优先的 AI 学习助手。它将理解学习上
 │   ├── app/core/auth.py
 │   ├── app/core/middleware.py
 │   ├── app/notes/             # Vault 安全、Markdown、提案和保存服务
+│   ├── app/llm/               # LLM Provider 抽象与 DeepSeek 兼容实现
+│   ├── app/ai_notes/           # Context、Prompt 和推荐业务校验
 │   ├── app/schemas/page_snapshot.py
 │   ├── app/schemas/notes.py
 │   ├── .env.example
@@ -80,6 +82,16 @@ uv run python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
 将输出配置为 `backend/.env` 中的 `LEARNFLOW_LOCAL_API_TOKEN=...`。`POST /api/v1/pages/ingest` 使用 `Authorization: Bearer <token>`，未配置或错误 Token 返回 401。
+
+### M01-04A DeepSeek AI 重点推荐
+
+M01-04A 使用后端 OpenAI-compatible Provider 调用 DeepSeek，默认模型为 `deepseek-flash`。API Key 只放在后端 `.env` 或安全环境变量中，不进入 Chrome 扩展、Git、日志或接口响应。配置示例见 `backend/.env.example`。
+
+用户流程为：采集页面 → 明确确认云端发送 → AI 分析 → 查看推荐并逐项取消 → 应用推荐到真实内容块选择 → 继续使用 M01-03 的 Markdown 预览和确认保存。AI 推荐不会自动保存笔记，也不会调用 Vault、文件系统或工具。
+
+新增接口为 `POST /api/v1/ai/notes/recommend`。它通过 Bearer Token、本地 Host/Origin 和 JSON 请求限制保护；测试使用 Fake Provider，不调用真实 DeepSeek。上下文超限会明确返回 `analysis.truncated`，模型输出必须经过 JSON、Pydantic、blockId 来源和业务约束校验。
+
+M01-04A 只推荐教程重点，不生成 AI 结构化 Markdown，不实现 Agent Loop、RAG、SQLite 或 M01-04B Compose。
 
 启用 M01-03 时，还要配置一个已有的 Obsidian 测试 Vault：
 

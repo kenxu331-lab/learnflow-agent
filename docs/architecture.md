@@ -1,6 +1,6 @@
 # LearnFlow Agent 当前架构
 
-## 当前状态（M01-03）
+## 当前状态（M01-04A）
 
 项目采用前后端分离的本地优先结构：`backend/` 与 `extension/` 是两个独立的工程单元，各自维护依赖和构建流程。
 
@@ -56,11 +56,15 @@ M01-02 在 M01-01 基础上增加用户显式触发的本地 HTTP 传输。M01-0
 
 当前申请 `sidePanel`、`activeTab`、`scripting`、`storage` 和 `http://127.0.0.1/*` Host Permission；没有申请 `<all_urls>`、`tabs` 或其他宽泛权限。Token 只存储在 `chrome.storage.local` 的 trusted contexts 中，background service worker 执行本地 fetch。注入函数必须自包含，因为 `chrome.scripting.executeScript({ func })` 不保留外部模块闭包。
 
+M01-04A 在页面采集成功后增加独立的 AI 推荐区域。用户必须勾选云端发送确认并手动点击分析；请求路径为 Chrome Side Panel → Background Service Worker → 本地 FastAPI → 固定的 DeepSeek OpenAI-compatible Provider。DeepSeek Key 永不进入扩展。推荐只返回真实 `PageSnapshot.blocks[].id`、类别和理由，应用推荐只合并到现有手动选择，不自动预览或保存。
+
 M01-03 的扩展显示内容块复选框和个人笔记输入。初始零选中；选择、输入变化或重新采集会使旧 proposal 失效，异步响应携带状态代次，不能恢复过期 proposal。预览只显示服务端生成的 Markdown 和 Diff，确认按钮只发送 proposalId。所有预览和网页文本使用 `textContent` 等安全方式渲染。
 
 采集块的 `id` 是本次 Side Panel 交互使用的顺序标识；`stableKey` 是持久化提示，基于块类型、文本/代码语言指纹和同类块出现序号，不依赖页面绝对块序号。后端优先使用 `stableKey` 写入 marker，并按指纹出现序号兼容旧版 `block-N` marker；相同正文的不同合法重复块不会被简单合并。
 
 后端根据规范化来源 URL 计算 SHA-256，生成 `LearnFlow/<safe-host>/<safe-slug>--<short-hash>.md`，客户端不能提供路径。首次写入先完整写入并刷盘同目录临时文件，再通过 Windows/NTFS 支持的排他硬链接发布，目标竞争出现时不会覆盖；更新使用同目录临时文件和 `os.replace`。预览时不创建目录或文件。检查与发布之间仍保留跨进程 TOCTOU 风险，因此不宣称消除 Obsidian 与其他进程的全部竞态；不支持不提供硬链接能力的文件系统回退覆盖。
+
+`app/llm/` 定义 Provider 协议和 DeepSeek/OpenAI-compatible 实现；`app/ai_notes/` 构建有界上下文、明确的 Prompt 和模型输出业务校验。网页文本只作为不可信资料，不触发指令、工具调用、文件访问或网络目标变更。Provider 超时、鉴权、限流、上游错误、空响应、JSON/结构错误均映射为稳定 API 错误。
 
 ### `docs/`
 
@@ -71,5 +75,7 @@ M01-03 的扩展显示内容块复选框和个人笔记输入。初始零选中�
 1. 增加学习会话、选中文字上下文和自研 `TOOL_HANDLERS`，保持 Agent 实现不依赖 LangChain。
 2. 引入 SQLite 元数据层，并在明确需求后扩展 Obsidian Markdown 生命周期管理。
 3. 在明确用户授权后，为浏览器侧增加更丰富的上下文采集和端到端测试；权限随具体能力最小化增加。
+
+4. M01-04B：在独立设计评审后实现 AI 结构化笔记 Compose；不得将 M01-04A 的推荐结果误认为已经完成 Compose。
 
 LearnFlow v2.1 Agent Runtime 以及 Study、Note、Review Workflow 仍属于规划内容；本轮没有创建空的 Agent 模块或提前实现这些功能。

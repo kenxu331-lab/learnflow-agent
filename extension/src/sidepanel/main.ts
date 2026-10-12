@@ -10,8 +10,11 @@ import { ensureTrustedStorageAccess } from "../backend/storage";
 import {
   NOTE_COMMIT_REQUEST,
   NOTE_PREVIEW_REQUEST,
+  AI_RECOMMEND_REQUEST,
   PAGE_INGEST_REQUEST,
   type BackendClientResult,
+  type AIRecommendationItem,
+  type AIRecommendationResult,
   type NoteClientResult,
 } from "../backend/types";
 
@@ -51,6 +54,15 @@ const markdownPreview = requiredElement<HTMLElement>("#markdown-preview");
 const markdownDiff = requiredElement<HTMLElement>("#markdown-diff");
 const commitNoteButton = requiredElement<HTMLButtonElement>("#commit-note-button");
 const noteStatus = requiredElement<HTMLElement>("#note-status");
+const aiPanel = requiredElement<HTMLElement>("#ai-recommendation-panel");
+const aiConsent = requiredElement<HTMLInputElement>("#ai-cloud-consent");
+const learningGoal = requiredElement<HTMLTextAreaElement>("#learning-goal");
+const aiRecommendButton = requiredElement<HTMLButtonElement>("#ai-recommend-button");
+const aiRecommendationList = requiredElement<HTMLElement>("#ai-recommendation-list");
+const applyAiRecommendationsButton = requiredElement<HTMLButtonElement>(
+  "#apply-ai-recommendations",
+);
+const aiStatus = requiredElement<HTMLElement>("#ai-status");
 
 let currentSnapshot: PageSnapshot | undefined;
 let sending = false;
@@ -58,6 +70,10 @@ let activeProposalId: string | undefined;
 let selectedBlockIds = new Set<string>();
 let notePreviewBusy = false;
 let noteStateGeneration = 0;
+let aiRecommendations: AIRecommendationItem[] = [];
+let aiSelectedBlockIds = new Set<string>();
+let aiBusy = false;
+let aiStateGeneration = 0;
 
 serviceUrl.value = LOCAL_INGEST_URL;
 
@@ -72,6 +88,71 @@ function invalidateNoteProposal(status = "需要重新生成预览"): void {
 function revealNotePreviewPanel(): void {
   notePreviewPanel.hidden = false;
   notePreviewPanel.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
+}
+
+function updateAiControls(): void {
+  aiRecommendButton.disabled =
+    !currentSnapshot || !aiConsent.checked || aiBusy;
+  applyAiRecommendationsButton.disabled =
+    aiBusy || aiSelectedBlockIds.size === 0;
+}
+
+function invalidateAiRecommendations(
+  status = "请先确认云端发送",
+): void {
+  aiStateGeneration += 1;
+  aiRecommendations = [];
+  aiSelectedBlockIds = new Set();
+  aiRecommendationList.replaceChildren();
+  aiStatus.textContent = status;
+  updateAiControls();
+}
+
+function renderAiRecommendations(): void {
+  const blockMap = new Map(
+    (currentSnapshot?.blocks ?? []).map((block) => [block.id, block]),
+  );
+  aiRecommendationList.replaceChildren(
+    ...aiRecommendations.map((recommendation) => {
+      const label = document.createElement("label");
+      label.className = "ai-recommendation";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = aiSelectedBlockIds.has(recommendation.blockId);
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) {
+          aiSelectedBlockIds.add(recommendation.blockId);
+        } else {
+          aiSelectedBlockIds.delete(recommendation.blockId);
+        }
+        updateAiControls();
+      });
+      const content = document.createElement("span");
+      content.className = "ai-recommendation-content";
+      const heading = document.createElement("strong");
+      heading.textContent = `[${recommendation.category}] ${recommendation.blockId}`;
+      const reason = document.createElement("span");
+      reason.className = "ai-recommendation-reason";
+      reason.textContent = recommendation.reason;
+      const excerpt = document.createElement("span");
+      excerpt.className = "ai-recommendation-excerpt";
+      excerpt.textContent = `原文：${
+        blockMap.get(recommendation.blockId)?.text.slice(0, 240) ?? ""
+      }`;
+      content.append(heading, reason, excerpt);
+      label.append(checkbox, content);
+      return label;
+    }),
+  );
+  updateAiControls();
+}
+
+function syncBlockCheckboxes(): void {
+  blockList
+    .querySelectorAll<HTMLInputElement>("input[data-block-id]")
+    .forEach((checkbox) => {
+      checkbox.checked = selectedBlockIds.has(checkbox.dataset.blockId ?? "");
+    });
 }
 
 function renderWarnings(warnings: string[]): void {
@@ -99,6 +180,7 @@ function renderBlockList(snapshot: PageSnapshot): void {
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.value = block.id;
+      checkbox.dataset.blockId = block.id;
       checkbox.addEventListener("change", () => {
         if (checkbox.checked) selectedBlockIds.add(block.id);
         else selectedBlockIds.delete(block.id);
@@ -131,6 +213,10 @@ function renderSnapshot(snapshot: PageSnapshot): void {
   sendButton.disabled = false;
   selectionPanel.hidden = false;
   renderBlockList(snapshot);
+  aiPanel.hidden = false;
+  aiConsent.checked = false;
+  learningGoal.value = "";
+  invalidateAiRecommendations();
   notePreviewPanel.hidden = true;
   commitNoteButton.disabled = true;
   noteStatus.textContent = "需要先生成预览";
@@ -141,6 +227,7 @@ function renderError(message: string): void {
   errorPanel.hidden = false;
   resultPanel.hidden = true;
   selectionPanel.hidden = true;
+  aiPanel.hidden = true;
   notePreviewPanel.hidden = true;
   warningPanel.hidden = true;
   captureStatus.textContent = "采集失败";
@@ -159,6 +246,7 @@ async function captureCurrentPage(): Promise<void> {
   setBusy(true);
   errorPanel.hidden = true;
   invalidateNoteProposal();
+  invalidateAiRecommendations();
   currentSnapshot = undefined;
   sendButton.disabled = true;
   try {
@@ -179,6 +267,56 @@ async function captureCurrentPage(): Promise<void> {
     captureButton.disabled = false;
     captureButton.textContent = "重新采集当前页面";
   }
+}
+
+async function analyzeCurrentPage(): Promise<void> {
+  if (!currentSnapshot || !aiConsent.checked || aiBusy) return;
+  const generation = aiStateGeneration;
+  aiBusy = true;
+  updateAiControls();
+  aiStatus.textContent = "正在请求云端 AI 分析…";
+  try {
+    const response = (await chrome.runtime.sendMessage({
+      type: AI_RECOMMEND_REQUEST,
+      snapshot: currentSnapshot,
+      learningGoal: learningGoal.value.trim(),
+      cloudConsent: true,
+    })) as AIRecommendationResult | undefined;
+    if (generation !== aiStateGeneration) return;
+    if (!response || !response.ok) {
+      aiStatus.textContent = response?.error.message ?? "AI 分析失败，请重试";
+      return;
+    }
+    aiRecommendations = response.response.recommendations;
+    aiSelectedBlockIds = new Set(
+      aiRecommendations.map((recommendation) => recommendation.blockId),
+    );
+    renderAiRecommendations();
+    aiStatus.textContent = aiRecommendations.length
+      ? `已推荐 ${aiRecommendations.length} 个重点${
+          response.response.analysis.truncated ? "（上下文已裁剪）" : ""
+        }`
+      : "AI 未推荐重点，你仍可以手动选择内容块";
+  } catch {
+    if (generation === aiStateGeneration) {
+      aiStatus.textContent = "AI 分析请求失败，请重试";
+    }
+  } finally {
+    aiBusy = false;
+    updateAiControls();
+  }
+}
+
+function applyAiRecommendations(): void {
+  if (!currentSnapshot || aiSelectedBlockIds.size === 0) return;
+  for (const blockId of aiSelectedBlockIds) {
+    if (currentSnapshot.blocks.some((block) => block.id === blockId)) {
+      selectedBlockIds.add(blockId);
+    }
+  }
+  syncBlockCheckboxes();
+  updateSelectionState();
+  aiStatus.textContent = "已应用推荐，可继续调整内容块后生成 Markdown 预览";
 }
 
 async function loadStoredToken(): Promise<void> {
@@ -346,5 +484,16 @@ sendButton.addEventListener("click", () => void sendCurrentSnapshot());
 previewNoteButton.addEventListener("click", () => void generateNotePreview());
 commitNoteButton.addEventListener("click", () => void commitNote());
 personalNote.addEventListener("input", () => invalidateNoteProposal());
+aiConsent.addEventListener("change", () => {
+  if (!aiConsent.checked) invalidateAiRecommendations();
+  else updateAiControls();
+});
+learningGoal.addEventListener("input", () => {
+  if (aiBusy || aiRecommendations.length > 0) {
+    invalidateAiRecommendations("学习目标已变化，请重新分析");
+  }
+});
+aiRecommendButton.addEventListener("click", () => void analyzeCurrentPage());
+applyAiRecommendationsButton.addEventListener("click", applyAiRecommendations);
 
 void loadStoredToken();

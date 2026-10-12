@@ -4,6 +4,9 @@ import type {
   BackendClientFailure,
   BackendClientResult,
   BackendIngestResponse,
+  AIRecommendationResponse,
+  AIRecommendationResult,
+  AIRecommendationItem,
   NoteClientResult,
   NoteCommitResponse,
   NotePreviewResponse,
@@ -15,7 +18,10 @@ export const LOCAL_NOTE_PREVIEW_URL =
   "http://127.0.0.1:8000/api/v1/notes/preview";
 export const LOCAL_NOTE_COMMIT_URL =
   "http://127.0.0.1:8000/api/v1/notes/commit";
+export const LOCAL_AI_RECOMMEND_URL =
+  "http://127.0.0.1:8000/api/v1/ai/notes/recommend";
 export const BACKEND_TIMEOUT_MS = 10_000;
+export const AI_BACKEND_TIMEOUT_MS = 75_000;
 
 function failure(
   code: BackendClientFailure["error"]["code"],
@@ -38,6 +44,43 @@ function isNoteAction(value: unknown): value is NotePreviewResponse["action"] {
 
 function isNoteStatus(value: unknown): value is NoteCommitResponse["status"] {
   return value === "created" || value === "updated" || value === "unchanged";
+}
+
+function isRecommendationCategory(value: unknown): value is AIRecommendationItem["category"] {
+  return (
+    value === "core_concept" ||
+    value === "code_example" ||
+    value === "important_detail" ||
+    value === "pitfall"
+  );
+}
+
+function isAIRecommendationResponse(
+  value: unknown,
+): value is AIRecommendationResponse {
+  if (!isRecord(value) || value.schemaVersion !== 1 || !isRecord(value.analysis)) {
+    return false;
+  }
+  if (
+    typeof value.analysis.model !== "string" ||
+    typeof value.analysis.analyzedBlockCount !== "number" ||
+    !Number.isSafeInteger(value.analysis.analyzedBlockCount) ||
+    value.analysis.analyzedBlockCount < 0 ||
+    typeof value.analysis.truncated !== "boolean" ||
+    !Array.isArray(value.recommendations) ||
+    value.recommendations.length > 12
+  ) {
+    return false;
+  }
+  return value.recommendations.every(
+    (item) =>
+      isRecord(item) &&
+      typeof item.blockId === "string" &&
+      item.blockId.trim().length > 0 &&
+      isRecommendationCategory(item.category) &&
+      typeof item.reason === "string" &&
+      item.reason.trim().length > 0,
+  );
 }
 
 function isBackendIngestResponse(value: unknown): value is BackendIngestResponse {
@@ -100,8 +143,25 @@ function statusFailure(
   if (status === 410) {
     return failure("PROPOSAL_EXPIRED", "预览提案已过期，请重新生成预览。");
   }
+  if (status === 429) return failure("LLM_RATE_LIMITED", "LLM 服务当前受到限流，请稍后重试。");
+  if (status === 504) return failure("LLM_TIMEOUT", "LLM 分析请求超时，请稍后重试。");
   if (status === 503 && backendCode === "vault_not_configured") {
     return failure("VAULT_NOT_CONFIGURED", "本地服务尚未配置 Obsidian Vault。");
+  }
+  if (status === 503 && backendCode === "llm_not_configured") {
+    return failure("LLM_NOT_CONFIGURED", "后端尚未配置 LLM API Key。");
+  }
+  if (status === 503 && backendCode === "llm_unavailable") {
+    return failure("LLM_UNAVAILABLE", "无法连接 LLM 服务，请稍后重试。");
+  }
+  if (status === 502 && backendCode === "llm_auth_failed") {
+    return failure("LLM_AUTH_FAILED", "LLM API Key 无效或无权限。");
+  }
+  if (status === 502 && backendCode === "llm_invalid_response") {
+    return failure("LLM_INVALID_RESPONSE", "LLM 返回格式无法通过校验。");
+  }
+  if (status === 502) {
+    return failure("LLM_UPSTREAM_ERROR", "LLM 服务处理失败，请稍后重试。");
   }
   if (status >= 500) return failure("SERVER_ERROR", "本地服务处理失败，请查看后端日志。");
   return failure("UNKNOWN_ERROR", `本地服务返回 HTTP ${status}。`);
@@ -124,12 +184,13 @@ async function postLocalJson<T>(
   url: string,
   payload: unknown,
   validate: (value: unknown) => value is T,
+  timeoutMs = BACKEND_TIMEOUT_MS,
 ): Promise<{ ok: true; value: T } | BackendClientFailure> {
   const token = await getToken();
   if (typeof token !== "string") return token;
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), BACKEND_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, {
       method: "POST",
@@ -204,6 +265,18 @@ export async function commitNote(proposalId: string): Promise<NoteClientResult> 
     LOCAL_NOTE_COMMIT_URL,
     { proposalId },
     isNoteCommitResponse,
+  );
+  return result.ok ? { ok: true, response: result.value } : result;
+}
+
+export async function recommendAi(
+  payload: Record<string, unknown>,
+): Promise<AIRecommendationResult> {
+  const result = await postLocalJson(
+    LOCAL_AI_RECOMMEND_URL,
+    payload,
+    isAIRecommendationResponse,
+    AI_BACKEND_TIMEOUT_MS,
   );
   return result.ok ? { ok: true, response: result.value } : result;
 }

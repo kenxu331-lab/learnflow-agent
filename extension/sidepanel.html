@@ -30,6 +30,27 @@
         </button>
       </section>
 
+      <section id="ai-recommendation-panel" class="ai-card" aria-labelledby="ai-recommendation-title" hidden>
+        <h2 id="ai-recommendation-title">AI 推荐重点</h2>
+        <p class="muted">
+          将当前网页标题、来源和采集正文发送到配置的 DeepSeek 云端 API。敏感页面请谨慎使用。
+        </p>
+        <label class="consent-option">
+          <input id="ai-cloud-consent" type="checkbox" />
+          <span>我确认本次允许将当前页面内容发送到云端 AI 分析</span>
+        </label>
+        <label class="field-label" for="learning-goal">学习目标（可选）</label>
+        <textarea id="learning-goal" rows="3" placeholder="例如：重点理解依赖注入的实际应用"></textarea>
+        <button id="ai-recommend-button" type="button" disabled>AI 分析当前教程</button>
+        <div id="ai-recommendation-list" class="ai-recommendation-list"></div>
+        <button id="apply-ai-recommendations" type="button" class="secondary-button" disabled>
+          应用所选推荐
+        </button>
+        <p id="ai-status" class="capture-status" role="status">
+          请先确认云端发送
+        </p>
+      </section>
+
       <section id="note-preview-panel" class="note-preview-card" aria-labelledby="note-preview-title" hidden>
         <h2 id="note-preview-title">Markdown 预览</h2>
         <p id="note-action" class="capture-status"></p>

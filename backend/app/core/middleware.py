@@ -14,6 +14,7 @@ SECURED_POST_PATHS = {
     INGEST_PATH,
     "/api/v1/notes/preview",
     "/api/v1/notes/commit",
+    "/api/v1/ai/notes/recommend",
 }
 
 

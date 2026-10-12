@@ -3,6 +3,7 @@ import type { PageSnapshot } from "../capture/types";
 export const PAGE_INGEST_REQUEST = "PAGE_INGEST_REQUEST" as const;
 export const NOTE_PREVIEW_REQUEST = "NOTE_PREVIEW_REQUEST" as const;
 export const NOTE_COMMIT_REQUEST = "NOTE_COMMIT_REQUEST" as const;
+export const AI_RECOMMEND_REQUEST = "AI_RECOMMEND_REQUEST" as const;
 
 export interface PageIngestRequest {
   type: typeof PAGE_INGEST_REQUEST;
@@ -19,6 +20,13 @@ export interface NotePreviewRequest {
 export interface NoteCommitRequest {
   type: typeof NOTE_COMMIT_REQUEST;
   proposalId: string;
+}
+
+export interface AiRecommendRequest {
+  type: typeof AI_RECOMMEND_REQUEST;
+  snapshot: PageSnapshot;
+  learningGoal: string;
+  cloudConsent: boolean;
 }
 
 export interface BackendIngestResponse {
@@ -46,6 +54,28 @@ export interface NoteCommitResponse {
   revision: string;
 }
 
+export type RecommendationCategory =
+  | "core_concept"
+  | "code_example"
+  | "important_detail"
+  | "pitfall";
+
+export interface AIRecommendationItem {
+  blockId: string;
+  category: RecommendationCategory;
+  reason: string;
+}
+
+export interface AIRecommendationResponse {
+  schemaVersion: 1;
+  recommendations: AIRecommendationItem[];
+  analysis: {
+    model: string;
+    analyzedBlockCount: number;
+    truncated: boolean;
+  };
+}
+
 export type BackendErrorCode =
   | "NO_TOKEN"
   | "INVALID_SNAPSHOT"
@@ -60,6 +90,14 @@ export type BackendErrorCode =
   | "NOTE_CONFLICT"
   | "PROPOSAL_EXPIRED"
   | "VAULT_NOT_CONFIGURED"
+  | "CLOUD_CONSENT_REQUIRED"
+  | "LLM_NOT_CONFIGURED"
+  | "LLM_AUTH_FAILED"
+  | "LLM_RATE_LIMITED"
+  | "LLM_TIMEOUT"
+  | "LLM_UPSTREAM_ERROR"
+  | "LLM_INVALID_RESPONSE"
+  | "LLM_UNAVAILABLE"
   | "STORAGE_ERROR"
   | "UNKNOWN_ERROR";
 
@@ -81,6 +119,9 @@ export interface BackendClientFailure {
 export type BackendClientResult = BackendClientSuccess | BackendClientFailure;
 export type NoteClientResult =
   | { ok: true; response: NotePreviewResponse | NoteCommitResponse }
+  | BackendClientFailure;
+export type AIRecommendationResult =
+  | { ok: true; response: AIRecommendationResponse }
   | BackendClientFailure;
 
 export function isPageIngestRequest(
@@ -118,5 +159,20 @@ export function isNoteCommitRequest(
     message.type === NOTE_COMMIT_REQUEST &&
     "proposalId" in message &&
     typeof message.proposalId === "string"
+  );
+}
+
+export function isAiRecommendRequest(
+  message: unknown,
+): message is AiRecommendRequest {
+  return (
+    typeof message === "object" &&
+    message !== null &&
+    "type" in message &&
+    message.type === AI_RECOMMEND_REQUEST &&
+    "snapshot" in message &&
+    "cloudConsent" in message &&
+    typeof message.cloudConsent === "boolean" &&
+    (!("learningGoal" in message) || typeof message.learningGoal === "string")
   );
 }
