@@ -1,6 +1,6 @@
 # LearnFlow Agent 当前架构
 
-## 当前状态（M01-04B）
+## 当前状态（M01-04C-00）
 
 项目采用前后端分离的本地优先结构：`backend/` 与 `extension/` 是两个独立的工程单元，各自维护依赖和构建流程。
 
@@ -63,6 +63,8 @@ M01-03 的扩展显示内容块复选框和个人笔记输入。初始零选中�
 M01-04B 的 `study-service.ts` 管理最小 `StudyState` 和 `StudySession`：`sessionId`、`chapterId`、`sourceUrl`、`pageTitle`、`snapshotHash`、`capturedAt`、`updatedAt`、`status`，并按章节保存最近快照。调度器对 `tabs.onUpdated`、`webNavigation.onHistoryStateUpdated` 和 `onReferenceFragmentUpdated` 做顶层 frame 过滤、防抖、有限重试和生成代次校验；相同章节和内容指纹不会创建新会话，旧采集结果不能覆盖当前章节。`webNavigation` 只提供导航元数据，不读取页面正文；图片、媒体和表格不被伪造为已采集内容，而是通过 `PageSnapshot.extraction.warnings` 暴露覆盖缺口。
 
 当前会话存储在扩展本地，是 M01-04B 的轻量过渡实现；未来可把 `session-store` 替换为后端 SQLite 来源索引，保留相同的章节/快照契约。M01-04B 不调用 M01-04A 的 AI Provider，不改变 M01-03 Note Service 的 Preview/Commit 语义。
+
+M01-04C-00 将 Side Panel 主界面重构为 Chat-first 学习工作台：`study-service.ts` 继续提供真实学习上下文；聊天输入和 AI 注解入口明确显示尚未接入，不发送伪造请求；“整理原文笔记”将当前 `PageSnapshot.blocks` 全量交给既有 Note Preview/Commit，预览和冲突保护不改变。旧版手动采集、块选择、AI 推荐、Token 和诊断能力收纳在高级工具区，避免删除已实现底层能力。
 
 采集块的 `id` 是本次 Side Panel 交互使用的顺序标识；`stableKey` 是持久化提示，基于块类型、文本/代码语言指纹和同类块出现序号，不依赖页面绝对块序号。后端优先使用 `stableKey` 写入 marker，并按指纹出现序号兼容旧版 `block-N` marker；相同正文的不同合法重复块不会被简单合并。
 

@@ -1,174 +1,201 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>LearnFlow Agent</title>
+    <meta name="color-scheme" content="light" />
+    <title>LearnFlow · 学习工作台</title>
   </head>
   <body>
     <main class="sidepanel" aria-labelledby="title">
-      <header class="panel-header">
-        <h1 id="title">LearnFlow Agent</h1>
-        <p id="status" role="status">Environment Ready</p>
+      <header class="panel-head">
+        <span class="logo" aria-hidden="true"><svg class="ic"><use href="#i-sparkle" /></svg></span>
+        <h1 id="title" class="brand-text">LearnFlow</h1>
+        <span class="sub-tag">LEARNING</span>
+        <span class="head-spacer"></span>
+        <button id="settingsBtn" class="icon-btn" type="button" aria-label="学习设置" title="学习设置">
+          <svg class="ic"><use href="#i-settings" /></svg>
+        </button>
       </header>
 
-      <section class="study-card" aria-labelledby="study-title">
-        <div class="study-card-heading">
-          <div>
-            <h2 id="study-title">当前学习</h2>
-            <p id="study-status" class="capture-status" role="status">
-              自动学习未启用
-            </p>
+      <section class="study-context" aria-labelledby="context-title">
+        <span class="source-icon" aria-hidden="true"><svg class="ic"><use href="#i-book" /></svg></span>
+        <div class="context-body">
+          <div id="study-site" class="eyebrow">尚未授权教程网站</div>
+          <div id="study-chapter" class="context-title">启用此网站的学习模式</div>
+          <div class="context-meta">
+            <span id="study-indicator" class="dot" aria-hidden="true"></span>
+            <span id="study-status" role="status">自动学习未启用</span>
+            <span id="study-captured-at" class="context-time"></span>
           </div>
-          <span id="study-indicator" class="study-indicator" aria-hidden="true">○</span>
+          <p id="study-error" class="context-warning" role="status" hidden></p>
+          <button id="study-enable-button" class="context-action" type="button">启用此网站的学习模式</button>
         </div>
-        <p id="study-site" class="muted">
-          仅支持用户授权的 fastapi.tiangolo.com 教程页面。
-        </p>
-        <dl class="study-details">
-          <div>
-            <dt>当前章节</dt>
-            <dd id="study-chapter">—</dd>
-          </div>
-          <div>
-            <dt>最近采集</dt>
-            <dd id="study-captured-at">—</dd>
-          </div>
-        </dl>
-        <p id="study-error" class="capture-status" role="status" hidden></p>
-        <div class="study-actions">
-          <button id="study-enable-button" type="button">
-            在此网站启用学习模式
-          </button>
-          <button id="study-pause-button" type="button" class="secondary-button" hidden>
-            暂停自动学习
-          </button>
-          <button id="study-revoke-button" type="button" class="secondary-button" hidden>
-            撤销此网站授权
-          </button>
-        </div>
-        <p id="study-permission-status" class="muted" role="status">
-          站点权限与云端 AI 授权相互独立。
-        </p>
       </section>
 
-      <section class="capture-card" aria-labelledby="capture-title">
-        <h2 id="capture-title">M01-01 单页教程采集</h2>
-        <p class="muted">自动学习的后备入口；仅采集当前授权页面，不会修改网页内容。</p>
-        <button id="capture-button" type="button">手动采集当前页面</button>
-        <p id="capture-status" class="capture-status" role="status">等待操作</p>
-      </section>
-
-      <section id="selection-panel" class="selection-card" aria-labelledby="selection-title" hidden>
-        <h2 id="selection-title">选择教程内容</h2>
-        <p id="selection-count" class="capture-status">已选择 0 个内容块</p>
-        <div id="block-list" class="block-list"></div>
-        <label class="field-label" for="personal-note">个人学习笔记（可选）</label>
-        <textarea id="personal-note" rows="4" placeholder="记录你的理解、疑问或下一步行动"></textarea>
-        <button id="preview-note-button" type="button" disabled>
-          生成 Markdown 预览
+      <nav class="main-tabs" aria-label="学习工作台视图">
+        <button class="tab active" data-tab="chat" type="button" aria-current="page">
+          <svg class="ic"><use href="#i-message" /></svg>学习对话
         </button>
-      </section>
-
-      <section id="ai-recommendation-panel" class="ai-card" aria-labelledby="ai-recommendation-title" hidden>
-        <h2 id="ai-recommendation-title">AI 推荐重点</h2>
-        <p class="muted">
-          将当前网页标题、来源和采集正文发送到配置的 DeepSeek 云端 API。敏感页面请谨慎使用。
-        </p>
-        <label class="consent-option">
-          <input id="ai-cloud-consent" type="checkbox" />
-          <span>我确认本次允许将当前页面内容发送到云端 AI 分析</span>
-        </label>
-        <label class="field-label" for="learning-goal">学习目标（可选）</label>
-        <textarea id="learning-goal" rows="3" placeholder="例如：重点理解依赖注入的实际应用"></textarea>
-        <button id="ai-recommend-button" type="button" disabled>AI 分析当前教程</button>
-        <div id="ai-recommendation-list" class="ai-recommendation-list"></div>
-        <button id="apply-ai-recommendations" type="button" class="secondary-button" disabled>
-          应用所选推荐
+        <button class="tab" data-tab="notes" type="button" aria-current="false">
+          <svg class="ic"><use href="#i-note" /></svg>我的笔记 <span id="noteCount" class="count">0</span>
         </button>
-        <p id="ai-status" class="capture-status" role="status">
-          请先确认云端发送
-        </p>
-      </section>
+      </nav>
 
-      <section id="note-preview-panel" class="note-preview-card" aria-labelledby="note-preview-title" hidden>
-        <h2 id="note-preview-title">Markdown 预览</h2>
-        <p id="note-action" class="capture-status"></p>
-        <p id="note-path" class="path-preview"></p>
-        <pre id="markdown-preview" class="content-preview"></pre>
-        <details>
-          <summary>查看 Diff</summary>
-          <pre id="markdown-diff" class="content-preview"></pre>
-        </details>
-        <button id="commit-note-button" type="button" disabled>确认保存</button>
-        <p id="note-status" class="capture-status" role="status">需要先生成预览</p>
-      </section>
-
-      <section id="result-panel" class="result-panel" aria-labelledby="result-title" hidden>
-        <h2 id="result-title">采集结果</h2>
-        <dl class="page-details">
-          <div>
-            <dt>页面标题</dt>
-            <dd id="page-title">—</dd>
+      <section id="chatView" class="view active" aria-label="学习对话">
+        <div id="chatList" class="chat-list">
+          <div class="small-label">当前章节学习工作台</div>
+          <div class="assistant-line">
+            <div class="avatar" aria-hidden="true"><svg class="ic"><use href="#i-sparkle" /></svg></div>
+            <div class="msg-content">
+              <div class="msg-title">LearnFlow <small>学习工作台</small></div>
+              <p id="chat-welcome">当前章节准备好后，你可以从原文整理开始；对话式学习能力即将接入。</p>
+              <div class="quick-grid">
+                <button class="quick" data-action="make-note" type="button">
+                  <span class="quick-icon green"><svg class="ic"><use href="#i-note" /></svg></span>
+                  <b>整理原文笔记</b><span>0 Token · 保留代码</span>
+                </button>
+                <button class="quick" data-action="ai-annotate" type="button">
+                  <span class="quick-icon"><svg class="ic"><use href="#i-sparkle" /></svg></span>
+                  <b>AI 注解当前小节</b><span>尚未接入 · 不会调用模型</span>
+                </button>
+              </div>
+              <div class="suggestions" aria-label="示例问题">
+                <button class="suggestion" data-prompt="解释当前章节的核心概念" type="button">解释当前章节的核心概念</button>
+                <button class="suggestion" data-prompt="这段代码在做什么？" type="button">这段代码在做什么？</button>
+              </div>
+            </div>
           </div>
-          <div>
-            <dt>页面 URL</dt>
-            <dd id="page-url">—</dd>
+          <div id="chat-unready-status" class="unready-card" role="status">
+            对话能力即将接入。当前不会发送问题，也不会模拟 AI 回复。
           </div>
-          <div>
-            <dt>正文字符数</dt>
-            <dd id="character-count">0</dd>
-          </div>
-          <div>
-            <dt>代码块数量</dt>
-            <dd id="code-block-count">0</dd>
-          </div>
-        </dl>
-
-        <h3>正文预览</h3>
-        <pre id="content-preview" class="content-preview">—</pre>
-
-        <div id="warning-panel" class="message-panel warning-panel" role="status" hidden>
-          <h3>采集提示</h3>
-          <ul id="warning-list"></ul>
         </div>
       </section>
 
-      <section class="connection-card" aria-labelledby="connection-title">
-        <h2 id="connection-title">本地服务连接</h2>
-        <label class="field-label" for="service-url">服务地址</label>
-        <input
-          id="service-url"
-          type="url"
-          value="http://127.0.0.1:8000/api/v1/pages/ingest"
-          readonly
-        />
-        <label class="field-label" for="api-token">本地 API Token</label>
-        <input
-          id="api-token"
-          type="password"
-          autocomplete="off"
-          placeholder="粘贴本地 Token"
-        />
-        <div class="connection-actions">
-          <button id="save-token-button" type="button" class="secondary-button">
-            保存 Token
-          </button>
-          <button id="send-button" type="button" disabled>
-            发送到本地服务
-          </button>
+      <section id="notesView" class="view" aria-label="学习笔记">
+        <div class="notes-wrap">
+          <div class="notes-top"><h2>学习笔记</h2><span id="notesState" class="notes-badge">尚未生成</span></div>
+          <div id="emptyNote" class="note-empty">
+            <span class="note-empty-icon" aria-hidden="true"><svg class="ic"><use href="#i-note" /></svg></span>
+            <h3>从当前章节开始积累</h3>
+            <p id="empty-note-hint">正在恢复当前学习章节；采集完成后即可整理全部有效原文。</p>
+            <button id="organize-note-button" class="btn-primary" data-action="make-note" type="button" disabled>整理原文笔记 · 0 Token</button>
+          </div>
+          <div id="noteDocument" class="hide">
+            <div class="note-doc-shell">
+              <div class="overline">LEARNFLOW / CURRENT CHAPTER · 原文预览</div>
+              <div id="note-preview-panel" hidden>
+              <div id="note-action" class="note-action"></div>
+              <p id="note-path" class="note-source"></p>
+              <pre id="markdown-preview" class="content-preview"></pre>
+              <details class="diff-details"><summary>查看 Diff</summary><pre id="markdown-diff" class="content-preview"></pre></details>
+              <div class="note-actions">
+                <button id="commit-note-button" class="btn-primary" type="button" disabled>确认保存</button>
+                <button id="ai-annotate-button" class="btn-outline" data-action="ai-annotate" type="button">AI 注解当前小节</button>
+              </div>
+              <p id="note-status" class="note-status" role="status">需要先生成预览</p>
+              </div>
+            </div>
+            <p class="explain">当前为过渡版原文整理：仍使用现有 Note Preview/Commit，不代表新版 Document Engine 已接入。</p>
+          </div>
         </div>
-        <p id="connection-status" class="capture-status" role="status">
-          尚未配置 Token
-        </p>
-        <p id="send-status" class="capture-status" role="status">等待发送</p>
       </section>
 
-      <div id="error-panel" class="message-panel error-panel" role="alert" hidden>
-        <h2>采集失败</h2>
-        <p id="error-message"></p>
+      <div id="composerArea" class="composer-area">
+        <div class="composer">
+          <textarea id="chatInput" rows="2" aria-label="向学习助手提问" placeholder="问问当前教程中的任何问题…" disabled></textarea>
+          <div class="composer-footer">
+            <span class="composer-caption"><svg class="ic"><use href="#i-lock" /></svg><span>对话能力尚未接入</span></span>
+            <button id="chat-send-button" class="send" type="button" aria-label="发送问题" title="对话能力尚未接入" disabled><svg class="ic"><use href="#i-up" /></svg></button>
+          </div>
+        </div>
+        <div class="footer-note">问题不会发送到模型 · 当前仅支持本地原文整理</div>
+      </div>
+
+      <details id="advanced-tools" class="advanced-tools">
+        <summary>高级工具（旧版能力）</summary>
+        <div class="advanced-body">
+          <section class="capture-card" aria-labelledby="capture-title">
+            <h2 id="capture-title">手动采集后备入口</h2>
+            <p class="muted">自动学习关闭或失效时，可手动采集当前页面。</p>
+            <button id="capture-button" type="button">手动采集当前页面</button>
+            <p id="capture-status" class="capture-status" role="status">等待操作</p>
+          </section>
+
+          <section id="result-panel" class="result-panel" aria-labelledby="result-title" hidden>
+            <h2 id="result-title">采集结果</h2>
+            <dl class="page-details">
+              <div><dt>页面标题</dt><dd id="page-title">—</dd></div>
+              <div><dt>页面 URL</dt><dd id="page-url">—</dd></div>
+              <div><dt>正文字符数</dt><dd id="character-count">0</dd></div>
+              <div><dt>代码块数量</dt><dd id="code-block-count">0</dd></div>
+            </dl>
+            <pre id="content-preview" class="content-preview">—</pre>
+            <div id="warning-panel" class="message-panel warning-panel" role="status" hidden><h3>采集提示</h3><ul id="warning-list"></ul></div>
+          </section>
+
+          <section id="selection-panel" class="selection-card" aria-labelledby="selection-title" hidden>
+            <h2 id="selection-title">选择教程内容（旧版）</h2>
+            <p id="selection-count" class="capture-status">已选择 0 个内容块</p>
+            <div id="block-list" class="block-list"></div>
+            <label class="field-label" for="personal-note">个人学习笔记（可选）</label>
+            <textarea id="personal-note" rows="3" placeholder="记录你的理解、疑问或下一步行动"></textarea>
+            <button id="preview-note-button" type="button" disabled>生成 Markdown 预览</button>
+          </section>
+
+          <section id="ai-recommendation-panel" class="ai-card" aria-labelledby="ai-recommendation-title" hidden>
+            <h2 id="ai-recommendation-title">AI 推荐重点（旧版）</h2>
+            <p class="muted">保留 M01-04A 能力，仅在高级工具中使用。</p>
+            <label class="consent-option"><input id="ai-cloud-consent" type="checkbox" /><span>我确认本次允许将当前页面内容发送到云端 AI 分析</span></label>
+            <label class="field-label" for="learning-goal">学习目标（可选）</label>
+            <textarea id="learning-goal" rows="2" placeholder="例如：重点理解依赖注入的实际应用"></textarea>
+            <button id="ai-recommend-button" type="button" disabled>AI 分析当前教程</button>
+            <div id="ai-recommendation-list" class="ai-recommendation-list"></div>
+            <button id="apply-ai-recommendations" type="button" class="secondary-button" disabled>应用所选推荐</button>
+            <p id="ai-status" class="capture-status" role="status">请先确认云端发送</p>
+          </section>
+
+          <section class="connection-card" aria-labelledby="connection-title">
+            <h2 id="connection-title">本地服务连接（旧版）</h2>
+            <label class="field-label" for="service-url">服务地址</label>
+            <input id="service-url" type="url" value="http://127.0.0.1:8000/api/v1/pages/ingest" readonly />
+            <label class="field-label" for="api-token">本地 API Token</label>
+            <input id="api-token" type="password" autocomplete="off" placeholder="粘贴本地 Token" />
+            <div class="connection-actions"><button id="save-token-button" type="button" class="secondary-button">保存 Token</button><button id="send-button" type="button" disabled>发送到本地服务</button></div>
+            <p id="connection-status" class="capture-status" role="status">尚未配置 Token</p><p id="send-status" class="capture-status" role="status">等待发送</p>
+          </section>
+        </div>
+      </details>
+
+      <div id="error-panel" class="message-panel error-panel" role="alert" hidden><h2>采集失败</h2><p id="error-message"></p></div>
+
+      <div id="settings" class="settings" role="dialog" aria-label="学习设置" hidden>
+        <h3>学习设置</h3>
+        <div class="setting-row"><span>自动跟随教程</span><button id="study-pause-button" class="setting-mini-btn" type="button" hidden>暂停</button></div>
+        <div class="setting-row"><span>站点授权</span><button id="study-revoke-button" class="setting-mini-btn" type="button" hidden>撤销</button></div>
+        <p id="study-permission-status" class="setting-desc">站点权限与云端 AI 授权相互独立。</p>
+        <p class="setting-desc">对话和 AI 注解尚未接入，不会发送云端请求。</p>
+      </div>
+
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+      <div id="unready-sheet" class="sheet-overlay" hidden role="presentation">
+        <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="unready-title">
+          <h3 id="unready-title">能力尚未接入</h3>
+          <p id="unready-message">该功能将在后续 Knowledge Engine 阶段接入。目前不会调用 DeepSeek，也不会模拟成功。</p>
+          <button id="close-unready" class="btn-primary" type="button">知道了</button>
+        </div>
       </div>
     </main>
+
+    <svg class="icon-sprite" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+      <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="m12 3 1.9 6.1L20 11l-6.1 1.9L12 19l-1.9-6.1L4 11l6.1-1.9L12 3Z"/><path d="m19 17 .8 2.2L22 20l-2.2.8L19 23l-.8-2.2L16 20l2.2-.8L19 17ZM5 1l.7 2.3L8 4l-2.3.7L5 7l-.7-2.3L2 4l2.3-.7L5 1Z"/></symbol>
+      <symbol id="i-book" viewBox="0 0 24 24"><path d="M12 7c-3-2-6.5-2-10-1v13c3.5-1 7-1 10 1 3-2 6.5-2 10-1V6c-3.5-1-7-2-10 1Z"/><path d="M12 7v13"/></symbol>
+      <symbol id="i-message" viewBox="0 0 24 24"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5c-1.6 0-3-.4-4.3-1.2L3 20l1.2-5.1A8.5 8.5 0 1 1 21 11.5Z"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></symbol>
+      <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 20V4m-6 6 6-6 6 6"/></symbol>
+      <symbol id="i-note" viewBox="0 0 24 24"><path d="M5 3h10l4 4v14H5z"/><path d="M14 3v5h5M8 12h8M8 16h8"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+    </svg>
     <script type="module" src="/src/sidepanel/main.ts"></script>
   </body>
 </html>
