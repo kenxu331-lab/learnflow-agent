@@ -164,6 +164,13 @@ export function extractPageSnapshot(): PageSnapshot {
     }
   }
 
+  if (extractionRoot.querySelector("img, picture, video, audio")) {
+    addWarning("页面包含图片或媒体，当前版本仅采集文字和代码，资源未保存。");
+  }
+  if (extractionRoot.querySelector("table")) {
+    addWarning("页面包含表格，当前版本尚未结构化采集表格内容。");
+  }
+
   function hashString(value: string, seed: number): string {
     let hash = seed;
     for (let index = 0; index < value.length; index += 1) {

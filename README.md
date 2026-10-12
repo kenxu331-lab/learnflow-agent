@@ -2,7 +2,7 @@
 
 LearnFlow Agent 是一个本地优先的 AI 学习助手。它将理解学习上下文、调用工具、维护学习记忆，并把学习成果沉淀到 Obsidian。
 
-本仓库当前完成 M01-04A 单页采集、页面快照安全传输、AI 重点推荐，以及用户确认后的 Markdown 笔记保存。暂不包含数据库、向量库、OCR、Agent Loop 或 AI 结构化笔记生成。
+本仓库当前完成 M01-04A 单页采集、页面快照安全传输、AI 重点推荐，以及用户确认后的 Markdown 笔记保存。本开发分支增加 M01-04B 的授权站点自动采集与可恢复学习会话底座；暂不包含数据库、向量库、OCR、Agent Loop 或 AI 结构化笔记生成。
 
 ## 技术栈
 
@@ -37,6 +37,7 @@ LearnFlow Agent 是一个本地优先的 AI 学习助手。它将理解学习上
 ├── extension/            # 独立 npm/Vite Chrome 扩展项目
 │   ├── public/manifest.json
 │   ├── src/capture/
+│   ├── src/study/        # 站点授权、自动采集调度和本地学习会话
 │   ├── src/backend/
 │   ├── src/background.ts
 │   ├── src/sidepanel/
@@ -91,7 +92,7 @@ M01-04A 使用后端 OpenAI-compatible Provider 调用 DeepSeek，默认模型�
 
 新增接口为 `POST /api/v1/ai/notes/recommend`。它通过 Bearer Token、本地 Host/Origin 和 JSON 请求限制保护；测试使用 Fake Provider，不调用真实 DeepSeek。上下文超限会明确返回 `analysis.truncated`，模型输出必须经过 JSON、Pydantic、blockId 来源和业务约束校验。
 
-M01-04A 只推荐教程重点，不生成 AI 结构化 Markdown，不实现 Agent Loop、RAG、SQLite 或 M01-04B Compose。
+M01-04A 只推荐教程重点，不生成 AI 结构化 Markdown，不实现 Agent Loop、RAG、SQLite 或 M01-04C Compose。
 
 启用 M01-03 时，还要配置一个已有的 Obsidian 测试 Vault：
 
@@ -118,11 +119,13 @@ npm run build
 
 用户点击扩展工具栏图标时，Manifest V3 background service worker 通过 `chrome.action.onClicked` 显式调用 `chrome.sidePanel.open({ tabId })`；这个用户手势用于建立 `activeTab` 临时访问上下文。随后侧边栏的“采集当前页面”按钮发送请求，service worker 查询并校验目标标签页，在 HTTP/HTTPS 页面中通过 `chrome.scripting.executeScript` 执行自包含 DOM extractor，返回标题、URL、章节、段落、代码块和列表组成的 `PageSnapshot`。结果只在侧边栏展示，不请求 FastAPI、不写数据库、不调用 LLM，也不修改网页内容。
 
-采集使用 `sidePanel`、`activeTab` 和 `scripting` 权限，不申请 `<all_urls>` 或宽泛 Host Permissions。当前支持普通 HTTP/HTTPS 教程、文档和 README 页面；`chrome://`、扩展页、开发者工具页、无正文页面和注入权限不足的页面会返回明确错误。M01-01 不包含跨页面跟随、选中文字提问、学习会话、AI 问答或 Obsidian 写入，这些能力留待后续模块。
+采集使用 `sidePanel`、`activeTab`、`scripting` 和 `webNavigation` 权限，不申请 `<all_urls>` 或宽泛 Host Permissions。当前支持普通 HTTP/HTTPS 教程、文档和 README 页面；`chrome://`、扩展页、开发者工具页、无正文页面和注入权限不足的页面会返回明确错误。M01-01 的采集器仍是 M01-04B 的唯一正文提取入口。M01-04B 在用户授权后由 Background Service Worker 自动调度该采集器，使用顶层 `webNavigation` 历史/fragment 事件支持普通导航、前进后退和常见 SPA 路由变化；自动采集只保存在本地学习状态中，不上传 DeepSeek、不写入 Obsidian。手动采集入口继续保留。
+
+M01-04B 当前声明 `webNavigation` 和精确的可选 Host Permission `https://fastapi.tiangolo.com/*`；用户点击“在此网站启用学习模式”时才申请站点访问。`webNavigation` 只提供导航元数据（Tab、顶层 frame、URL），不读取正文；后台仍严格检查已授权站点、当前 Tab 和学习模式状态。站点授权和云端 AI 授权分开，未授权站点不会自动注入采集脚本。页面中的图片、媒体和表格会在 `PageSnapshot.extraction.warnings` 中标记为未覆盖，不会宣称整页无损采集。
 
 ## 当前范围
 
-M00-01 负责可重复的工程骨架、依赖锁定、基础检查和扩展加载入口。M00-02 增加 FastAPI 配置、健康检查和自动化测试。M01-01 增加浏览器当前页面的显式单页采集。M01-02 增加带本地 Token 鉴权的页面快照传输。后续阶段再加入 Agent 工具处理器、学习会话、AI 问答、记忆存储和 Obsidian 同步。
+M00-01 负责可重复的工程骨架、依赖锁定、基础检查和扩展加载入口。M00-02 增加 FastAPI 配置、健康检查和自动化测试。M01-01 增加浏览器当前页面的显式单页采集。M01-02 增加带本地 Token 鉴权的页面快照传输。M01-04B 增加授权站点自动采集和本地学习会话底座；后续阶段再加入 Agent 工具处理器、AI 问答、记忆存储和 AI 注解式 Markdown。
 
 M01-02 的本地服务配置：在 `backend/.env` 设置 `LEARNFLOW_LOCAL_API_TOKEN`，扩展中保存同一个 Token 后，用户可主动点击“发送到本地服务”。服务只返回校验状态和统计摘要，不保存正文；网络、401、422、413 和超时错误会在侧边栏显示。
 
@@ -138,3 +141,11 @@ M01-02 的本地服务配置：在 `backend/.env` 设置 `LEARNFLOW_LOCAL_API_TO
 - 预览提案默认 10 分钟过期，保存在单个后端进程内存中；服务重启、多 worker 或多实例不会保留提案。预览后文件被外部修改时返回 409，要求重新预览。
 
 当前 M01-03 不保存学习会话，不使用 SQLite、LLM 或 Agent Runtime，不自动跟踪网页导航，也不把网页文本当作系统指令执行。文件检查到原子替换之间仍存在跨进程竞态，Obsidian 中手动移动或重命名笔记也不会被自动追踪。
+
+### M01-04B 自动采集与学习会话
+
+学习模式状态由扩展 Background Service Worker 管理，并写入 `chrome.storage.local`，因此 Service Worker 休眠或重启后可以恢复启用状态、当前章节、快照版本指纹和最近错误。当前状态至少包含 `sessionId`、`chapterId`、`sourceUrl`、`pageTitle`、`snapshotHash`、`capturedAt`、`updatedAt` 和 `status`；同一章节的重复 URL/内容不会创建新的会话记录，过期采集结果不能覆盖新章节。
+
+自动采集使用有限防抖与重试，不因每次 DOM 微小变化触发模型请求。M01-04B 不自动调用 AI，现有 M01-04A 的 AI 推荐仍需用户单独勾选云端同意并手动点击分析。当前会话存储是扩展本地的轻量过渡方案，后续可将同一会话/快照接口迁移到后端 SQLite 来源索引；最终 Markdown 仍必须经过 M01-03 Note Service 的 Preview/Commit 和用户确认。
+
+M01-04B 手工验收：执行 `npm.cmd run build` 后，在 `chrome://extensions` 重新加载 `extension/dist`；打开 FastAPI 教程，点击工具栏图标打开侧边栏，再点击“在此网站启用学习模式”并接受精确站点权限。页面初次加载、普通章节导航、浏览器前进/后退及站点 SPA 路由变化应更新“当前学习”状态；重复回到相同内容不应创建新会话。点击“暂停自动学习”后不应再自动读取页面；`chrome://extensions` 或未授权网站不应触发自动采集。自动采集不会自动发送 DeepSeek，也不会自动写入 Obsidian。

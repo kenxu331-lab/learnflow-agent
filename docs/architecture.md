@@ -1,6 +1,6 @@
 # LearnFlow Agent 当前架构
 
-## 当前状态（M01-04A）
+## 当前状态（M01-04B）
 
 项目采用前后端分离的本地优先结构：`backend/` 与 `extension/` 是两个独立的工程单元，各自维护依赖和构建流程。
 
@@ -9,15 +9,15 @@ Toolbar action
         │  chrome.action.onClicked → chrome.sidePanel.open({ tabId })
         ▼
 Chrome Side Panel
-        │  PAGE_CAPTURE_REQUEST
+        │  用户授权 fastapi.tiangolo.com 后显示学习状态
         ▼
 MV3 Background Service Worker
-        │  activeTab + scripting
+        │  tabs.onUpdated/onActivated + webNavigation top-frame events
         ▼
-当前 HTTP/HTTPS 页面 DOM
+授权教程页面 DOM（activeTab 或可选 Host Permission）
         │  PageSnapshot
-        ▼
-Side Panel 结果展示
+        ├── 本地 chrome.storage.local 学习会话/快照
+        └── Side Panel 当前章节与采集状态
         │  用户主动点击发送
         ▼
 Background fetch + Bearer Token
@@ -40,7 +40,7 @@ FastAPI backend (backend/app/main.py)
         └── /api/v1/notes/preview + /commit（Markdown 预览与确认保存）
 ```
 
-M01-02 在 M01-01 基础上增加用户显式触发的本地 HTTP 传输。M01-03 在此基础上增加用户显式选择和确认的 Markdown 笔记服务。页面快照、Markdown 和个人笔记都不进入日志；服务不监视标签页、不跨页面跟随、不调用 LLM、不使用 SQLite。
+M01-02 在 M01-01 基础上增加用户显式触发的本地 HTTP 传输。M01-03 在此基础上增加用户显式选择和确认的 Markdown 笔记服务。M01-04B 增加用户授权后的站点级自动采集和可恢复学习会话；自动采集仅写入扩展本地状态，不自动上传或保存最终笔记。页面快照、Markdown 和个人笔记都不进入日志。
 
 ## 模块边界
 
@@ -54,11 +54,15 @@ M01-02 在 M01-01 基础上增加用户显式触发的本地 HTTP 传输。M01-0
 
 独立的 TypeScript/Vite 项目。`sidepanel.html` 是 Chrome Side Panel 页面入口，`src/sidepanel/` 负责页面脚本、安全渲染、Token 配置和发送状态，`src/capture/` 定义 `PageSnapshot`、DOM extractor 和采集调度，`src/backend/` 负责 background fetch 的消息契约和固定本地 API 客户端，`src/background.ts` 注册 Manifest V3 service worker 消息处理。`public/manifest.json` 在构建时原样复制到 `dist/`，其中的路径与 Vite 输出保持一致。
 
-当前申请 `sidePanel`、`activeTab`、`scripting`、`storage` 和 `http://127.0.0.1/*` Host Permission；没有申请 `<all_urls>`、`tabs` 或其他宽泛权限。Token 只存储在 `chrome.storage.local` 的 trusted contexts 中，background service worker 执行本地 fetch。注入函数必须自包含，因为 `chrome.scripting.executeScript({ func })` 不保留外部模块闭包。
+当前申请 `sidePanel`、`activeTab`、`scripting`、`storage`、`webNavigation` 和 `http://127.0.0.1/*` Host Permission，并声明可选的精确 `https://fastapi.tiangolo.com/*` Host Permission；没有申请 `<all_urls>`、`tabs` 或其他宽泛权限。`webNavigation` 只处理已授权站点的顶层导航元数据，不读取页面正文。站点权限只在用户点击启用按钮时请求，撤销或暂停后后台不会注入采集脚本。Token 和学习会话只存储在 `chrome.storage.local` 的 trusted contexts 中，background service worker 执行本地 fetch。
 
 M01-04A 在页面采集成功后增加独立的 AI 推荐区域。用户必须勾选云端发送确认并手动点击分析；请求路径为 Chrome Side Panel → Background Service Worker → 本地 FastAPI → 固定的 DeepSeek OpenAI-compatible Provider。DeepSeek Key 永不进入扩展。推荐只返回真实 `PageSnapshot.blocks[].id`、类别和理由，应用推荐只合并到现有手动选择，不自动预览或保存。
 
 M01-03 的扩展显示内容块复选框和个人笔记输入。初始零选中；选择、输入变化或重新采集会使旧 proposal 失效，异步响应携带状态代次，不能恢复过期 proposal。预览只显示服务端生成的 Markdown 和 Diff，确认按钮只发送 proposalId。所有预览和网页文本使用 `textContent` 等安全方式渲染。
+
+M01-04B 的 `study-service.ts` 管理最小 `StudyState` 和 `StudySession`：`sessionId`、`chapterId`、`sourceUrl`、`pageTitle`、`snapshotHash`、`capturedAt`、`updatedAt`、`status`，并按章节保存最近快照。调度器对 `tabs.onUpdated`、`webNavigation.onHistoryStateUpdated` 和 `onReferenceFragmentUpdated` 做顶层 frame 过滤、防抖、有限重试和生成代次校验；相同章节和内容指纹不会创建新会话，旧采集结果不能覆盖当前章节。`webNavigation` 只提供导航元数据，不读取页面正文；图片、媒体和表格不被伪造为已采集内容，而是通过 `PageSnapshot.extraction.warnings` 暴露覆盖缺口。
+
+当前会话存储在扩展本地，是 M01-04B 的轻量过渡实现；未来可把 `session-store` 替换为后端 SQLite 来源索引，保留相同的章节/快照契约。M01-04B 不调用 M01-04A 的 AI Provider，不改变 M01-03 Note Service 的 Preview/Commit 语义。
 
 采集块的 `id` 是本次 Side Panel 交互使用的顺序标识；`stableKey` 是持久化提示，基于块类型、文本/代码语言指纹和同类块出现序号，不依赖页面绝对块序号。后端优先使用 `stableKey` 写入 marker，并按指纹出现序号兼容旧版 `block-N` marker；相同正文的不同合法重复块不会被简单合并。
 
@@ -76,6 +80,6 @@ M01-03 的扩展显示内容块复选框和个人笔记输入。初始零选中�
 2. 引入 SQLite 元数据层，并在明确需求后扩展 Obsidian Markdown 生命周期管理。
 3. 在明确用户授权后，为浏览器侧增加更丰富的上下文采集和端到端测试；权限随具体能力最小化增加。
 
-4. M01-04B：在独立设计评审后实现 AI 结构化笔记 Compose；不得将 M01-04A 的推荐结果误认为已经完成 Compose。
+4. M01-04C：在独立设计评审后实现 AI 结构化笔记 Compose；不得将 M01-04A 的推荐结果误认为已经完成 Compose。
 
 LearnFlow v2.1 Agent Runtime 以及 Study、Note、Review Workflow 仍属于规划内容；本轮没有创建空的 Agent 模块或提前实现这些功能。

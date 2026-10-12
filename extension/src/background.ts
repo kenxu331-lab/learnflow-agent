@@ -9,6 +9,7 @@ import {
   recommendAi,
 } from "./backend/api-client";
 import { ensureTrustedStorageAccess } from "./backend/storage";
+import { registerStudyService } from "./study/study-service";
 import {
   isPageIngestRequest,
   isNoteCommitRequest,
@@ -126,4 +127,5 @@ async function configureStorageAccess(): Promise<void> {
 registerActionClickHandler();
 registerCaptureMessageHandler();
 registerBackendMessageHandler();
+registerStudyService();
 void configureStorageAccess();

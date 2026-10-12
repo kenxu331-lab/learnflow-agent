@@ -17,6 +17,20 @@ import {
   type AIRecommendationResult,
   type NoteClientResult,
 } from "../backend/types";
+import {
+  STUDY_ENABLE_REQUEST,
+  STUDY_PAUSE_REQUEST,
+  STUDY_REVOKE_REQUEST,
+  STUDY_MANUAL_SNAPSHOT_REQUEST,
+  STUDY_SITE_HOST_PERMISSION,
+  isStudyStateChangedMessage,
+  type StudyActionResult,
+  type StudyState,
+} from "../study/types";
+import {
+  createDefaultStudyState,
+  loadStudyState,
+} from "../study/session-store";
 
 function requiredElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -63,6 +77,24 @@ const applyAiRecommendationsButton = requiredElement<HTMLButtonElement>(
   "#apply-ai-recommendations",
 );
 const aiStatus = requiredElement<HTMLElement>("#ai-status");
+const studyStatus = requiredElement<HTMLElement>("#study-status");
+const studyIndicator = requiredElement<HTMLElement>("#study-indicator");
+const studySite = requiredElement<HTMLElement>("#study-site");
+const studyChapter = requiredElement<HTMLElement>("#study-chapter");
+const studyCapturedAt = requiredElement<HTMLElement>("#study-captured-at");
+const studyError = requiredElement<HTMLElement>("#study-error");
+const studyEnableButton = requiredElement<HTMLButtonElement>(
+  "#study-enable-button",
+);
+const studyPauseButton = requiredElement<HTMLButtonElement>(
+  "#study-pause-button",
+);
+const studyRevokeButton = requiredElement<HTMLButtonElement>(
+  "#study-revoke-button",
+);
+const studyPermissionStatus = requiredElement<HTMLElement>(
+  "#study-permission-status",
+);
 
 let currentSnapshot: PageSnapshot | undefined;
 let sending = false;
@@ -74,8 +106,167 @@ let aiRecommendations: AIRecommendationItem[] = [];
 let aiSelectedBlockIds = new Set<string>();
 let aiBusy = false;
 let aiStateGeneration = 0;
+let studyState: StudyState = createDefaultStudyState();
+let studyActionBusy = false;
 
 serviceUrl.value = LOCAL_INGEST_URL;
+
+const studyStatusLabels: Record<StudyState["status"], string> = {
+  DISABLED: "自动学习未启用",
+  AUTHORIZED: "已授权，等待页面稳定",
+  CAPTURING: "正在自动采集当前章节…",
+  SOURCE_READY: "当前章节已采集",
+  LOCAL_SOURCE_ONLY: "当前章节已本地采集",
+  CAPTURE_FAILED: "自动采集失败",
+};
+
+function snapshotViewKey(snapshot: PageSnapshot | undefined): string {
+  if (!snapshot) return "";
+  return `${snapshot.url}\u0000${snapshot.capturedAt}\u0000${snapshot.stats.characterCount}`;
+}
+
+function renderStudyState(nextState: StudyState): void {
+  studyState = nextState;
+  studyStatus.textContent = studyStatusLabels[nextState.status];
+  studyIndicator.textContent = nextState.enabled
+    ? nextState.status === "CAPTURING"
+      ? "…"
+      : "●"
+    : "○";
+  studyIndicator.style.color = nextState.enabled ? "#2563eb" : "#64748b";
+  studyEnableButton.hidden = nextState.enabled;
+  studyPauseButton.hidden = !nextState.enabled;
+  studyRevokeButton.hidden = !nextState.authorizedOrigin;
+  studyChapter.textContent = nextState.currentSession?.pageTitle ?? "—";
+  studyCapturedAt.textContent = nextState.currentSession?.capturedAt ?? "—";
+  studyError.hidden = !nextState.lastError;
+  studyError.textContent = nextState.lastError ?? "";
+  studySite.textContent = nextState.currentSession
+    ? `当前来源：${nextState.currentSession.sourceUrl}`
+    : "仅支持用户授权的 fastapi.tiangolo.com 教程页面。";
+
+  if (nextState.currentSnapshot) {
+    const currentKey = snapshotViewKey(currentSnapshot);
+    if (currentKey !== snapshotViewKey(nextState.currentSnapshot)) {
+      renderSnapshot(nextState.currentSnapshot);
+    }
+  } else if (currentSnapshot) {
+    clearCurrentSnapshotView();
+  }
+}
+
+async function refreshStudyPermissionStatus(): Promise<void> {
+  try {
+    const granted = await chrome.permissions.contains({
+      origins: [STUDY_SITE_HOST_PERMISSION],
+    });
+    studyPermissionStatus.textContent = granted
+      ? "站点访问已授权；云端 AI 仍需单独确认。"
+      : "尚未授权站点访问；云端 AI 授权与此相互独立。";
+  } catch {
+    studyPermissionStatus.textContent =
+      "无法读取站点权限；请通过按钮重新检查。";
+  }
+}
+
+async function loadStudyUi(): Promise<void> {
+  studyState = await loadStudyState();
+  renderStudyState(studyState);
+  await refreshStudyPermissionStatus();
+}
+
+function sendStudyAction(
+  type: typeof STUDY_ENABLE_REQUEST | typeof STUDY_PAUSE_REQUEST | typeof STUDY_REVOKE_REQUEST,
+): Promise<StudyActionResult> {
+  return chrome.runtime.sendMessage({ type }) as Promise<StudyActionResult>;
+}
+
+async function enableStudyMode(): Promise<void> {
+  if (studyActionBusy) return;
+  studyActionBusy = true;
+  studyEnableButton.disabled = true;
+  studyStatus.textContent = "正在请求站点访问权限…";
+  try {
+    // Call request directly from the button handler so Chrome can associate it
+    // with the user's gesture. This exact origin is the only optional host
+    // permission declared by this milestone.
+    const granted = await chrome.permissions.request({
+      origins: [STUDY_SITE_HOST_PERMISSION],
+    });
+    if (!granted) {
+      studyStatus.textContent = "未获得站点访问权限，自动学习未启用";
+      return;
+    }
+    const response = await sendStudyAction(STUDY_ENABLE_REQUEST);
+    if (!response.ok) {
+      studyStatus.textContent = response.error.message;
+      return;
+    }
+    renderStudyState(response.value);
+    await refreshStudyPermissionStatus();
+  } catch {
+    studyStatus.textContent = "站点授权失败，自动学习未启用";
+  } finally {
+    studyActionBusy = false;
+    studyEnableButton.disabled = false;
+  }
+}
+
+async function pauseStudyMode(): Promise<void> {
+  if (studyActionBusy) return;
+  studyActionBusy = true;
+  studyPauseButton.disabled = true;
+  try {
+    const response = await sendStudyAction(STUDY_PAUSE_REQUEST);
+    if (!response.ok) {
+      studyError.hidden = false;
+      studyError.textContent = response.error.message;
+      return;
+    }
+    renderStudyState(response.value);
+  } catch {
+    studyError.hidden = false;
+    studyError.textContent = "暂停自动学习失败，请重试。";
+  } finally {
+    studyActionBusy = false;
+    studyPauseButton.disabled = false;
+  }
+}
+
+async function revokeStudyMode(): Promise<void> {
+  if (studyActionBusy) return;
+  studyActionBusy = true;
+  studyRevokeButton.disabled = true;
+  try {
+    const removed = await chrome.permissions.remove({
+      origins: [STUDY_SITE_HOST_PERMISSION],
+    });
+    if (!removed) {
+      const stillGranted = await chrome.permissions.contains({
+        origins: [STUDY_SITE_HOST_PERMISSION],
+      });
+      if (stillGranted) {
+        studyError.hidden = false;
+        studyError.textContent = "未能撤销站点权限，当前学习模式未改变。";
+        return;
+      }
+    }
+    const response = await sendStudyAction(STUDY_REVOKE_REQUEST);
+    if (!response.ok) {
+      studyError.hidden = false;
+      studyError.textContent = response.error.message;
+      return;
+    }
+    renderStudyState(response.value);
+    await refreshStudyPermissionStatus();
+  } catch {
+    studyError.hidden = false;
+    studyError.textContent = "撤销站点权限失败，请重试。";
+  } finally {
+    studyActionBusy = false;
+    studyRevokeButton.disabled = false;
+  }
+}
 
 function invalidateNoteProposal(status = "需要重新生成预览"): void {
   noteStateGeneration += 1;
@@ -222,6 +413,22 @@ function renderSnapshot(snapshot: PageSnapshot): void {
   noteStatus.textContent = "需要先生成预览";
 }
 
+function clearCurrentSnapshotView(): void {
+  currentSnapshot = undefined;
+  selectedBlockIds = new Set();
+  activeProposalId = undefined;
+  resultPanel.hidden = true;
+  selectionPanel.hidden = true;
+  aiPanel.hidden = true;
+  notePreviewPanel.hidden = true;
+  warningPanel.hidden = true;
+  sendButton.disabled = true;
+  previewNoteButton.disabled = true;
+  commitNoteButton.disabled = true;
+  invalidateAiRecommendations("等待当前章节重新采集");
+  invalidateNoteProposal("等待当前章节重新采集");
+}
+
 function renderError(message: string): void {
   errorMessage.textContent = message;
   errorPanel.hidden = false;
@@ -258,6 +465,14 @@ async function captureCurrentPage(): Promise<void> {
       return;
     }
     renderSnapshot(response.snapshot);
+    if (studyState.enabled) {
+      void chrome.runtime
+        .sendMessage({
+          type: STUDY_MANUAL_SNAPSHOT_REQUEST,
+          snapshot: response.snapshot,
+        })
+        .catch(() => undefined);
+    }
     captureStatus.textContent = "采集完成";
   } catch (error) {
     renderError(
@@ -496,4 +711,16 @@ learningGoal.addEventListener("input", () => {
 aiRecommendButton.addEventListener("click", () => void analyzeCurrentPage());
 applyAiRecommendationsButton.addEventListener("click", applyAiRecommendations);
 
+studyEnableButton.addEventListener("click", () => void enableStudyMode());
+studyPauseButton.addEventListener("click", () => void pauseStudyMode());
+studyRevokeButton.addEventListener("click", () => void revokeStudyMode());
+
+chrome.runtime?.onMessage?.addListener((message) => {
+  if (isStudyStateChangedMessage(message)) {
+    renderStudyState(message.state);
+  }
+  return false;
+});
+
 void loadStoredToken();
+void loadStudyUi();

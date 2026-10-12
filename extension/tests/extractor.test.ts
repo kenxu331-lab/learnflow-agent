@@ -143,4 +143,27 @@ describe("extractPageSnapshot", () => {
     expect(repeated).toHaveLength(2);
     expect(repeated[0].stableKey).not.toBe(repeated[1].stableKey);
   });
+
+  it("reports image and table coverage gaps without inventing their contents", () => {
+    document.body.innerHTML = `
+      <article>
+        <h1>Coverage</h1>
+        <p>Text remains available.</p>
+        <img src="diagram.png" alt="Architecture diagram" />
+        <table><tr><td>Not yet structured</td></tr></table>
+      </article>
+    `;
+
+    const snapshot = extractPageSnapshot();
+
+    expect(snapshot.extraction.warnings).toContain(
+      "页面包含图片或媒体，当前版本仅采集文字和代码，资源未保存。",
+    );
+    expect(snapshot.extraction.warnings).toContain(
+      "页面包含表格，当前版本尚未结构化采集表格内容。",
+    );
+    expect(snapshot.blocks.map((block) => block.text)).not.toContain(
+      "Not yet structured",
+    );
+  });
 });

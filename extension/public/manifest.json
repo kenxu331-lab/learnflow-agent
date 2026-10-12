@@ -3,8 +3,15 @@
   "name": "LearnFlow Agent",
   "version": "0.1.0",
   "description": "A local-first AI learning agent side panel.",
-  "permissions": ["sidePanel", "activeTab", "scripting", "storage"],
+  "permissions": [
+    "sidePanel",
+    "activeTab",
+    "scripting",
+    "storage",
+    "webNavigation"
+  ],
   "host_permissions": ["http://127.0.0.1/*"],
+  "optional_host_permissions": ["https://fastapi.tiangolo.com/*"],
   "action": {
     "default_title": "Open LearnFlow Agent"
   },

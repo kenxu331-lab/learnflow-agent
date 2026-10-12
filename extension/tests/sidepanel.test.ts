@@ -25,6 +25,18 @@ function setupDom(): void {
   document.body.innerHTML = `
     <button id="capture-button" type="button">采集当前页面</button>
     <p id="capture-status">等待操作</p>
+    <section id="study-panel">
+      <p id="study-status"></p>
+      <span id="study-indicator"></span>
+      <p id="study-site"></p>
+      <p id="study-chapter"></p>
+      <p id="study-captured-at"></p>
+      <p id="study-error" hidden></p>
+      <button id="study-enable-button" type="button">启用</button>
+      <button id="study-pause-button" type="button" hidden>暂停</button>
+      <button id="study-revoke-button" type="button" hidden>撤销</button>
+      <p id="study-permission-status"></p>
+    </section>
     <section id="result-panel" hidden>
       <p id="page-title"></p><p id="page-url"></p>
       <p id="character-count"></p><p id="code-block-count"></p>
@@ -161,6 +173,44 @@ describe("side panel visibility state", () => {
     expect(document.querySelector<HTMLElement>("#content-preview")?.textContent).toBe(
       "Tutorial text.",
     );
+  });
+
+  it("requests only the declared FastAPI site permission before enabling study mode", async () => {
+    setupDom();
+    const request = vi.fn().mockResolvedValue(true);
+    const sendMessage = vi.fn().mockResolvedValue({
+      ok: true,
+      value: {
+        schemaVersion: 1,
+        enabled: true,
+        status: "AUTHORIZED",
+        authorizedOrigin: "https://fastapi.tiangolo.com",
+        activeTabId: 7,
+        sessionsByChapter: {},
+        snapshotsByChapter: {},
+      },
+    });
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage },
+      permissions: {
+        request,
+        contains: vi.fn().mockResolvedValue(false),
+      },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#study-enable-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#study-status")?.textContent).toBe(
+        "已授权，等待页面稳定",
+      );
+    });
+
+    expect(request).toHaveBeenCalledWith({
+      origins: ["https://fastapi.tiangolo.com/*"],
+    });
+    expect(sendMessage).toHaveBeenCalledWith({ type: "STUDY_ENABLE_REQUEST" });
   });
 
   it("configures trusted storage before saving a token", async () => {
