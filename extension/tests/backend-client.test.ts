@@ -4,6 +4,7 @@ import {
   commitNote,
   ingestPageSnapshot,
   previewNote,
+  recommendAi,
 } from "../src/backend/api-client";
 import type { PageSnapshot } from "../src/capture/types";
 
@@ -174,6 +175,61 @@ describe("backend HTTP client", () => {
     expect(result).toMatchObject({
       ok: false,
       error: { code: "VAULT_NOT_CONFIGURED" },
+    });
+  });
+
+  it("constructs an AI recommendation request with the extended timeout", async () => {
+    const response = {
+      schemaVersion: 1,
+      recommendations: [
+        {
+          blockId: "block-1",
+          category: "core_concept",
+          reason: "解释核心机制",
+        },
+      ],
+      analysis: {
+        model: "fake-deepseek-flash",
+        analyzedBlockCount: 1,
+        truncated: false,
+      },
+    } as const;
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(response), { status: 200 }),
+    );
+    const payload = {
+      snapshot,
+      learningGoal: "理解核心机制",
+    };
+
+    const result = await recommendAi(payload);
+
+    expect(result).toEqual({ ok: true, response });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/ai/notes/recommend",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify(payload),
+        signal: expect.any(AbortSignal),
+      }),
+    );
+  });
+
+  it("maps AI timeout and invalid response errors", async () => {
+    fetchMock.mockRejectedValue(new DOMException("aborted", "AbortError"));
+    const timeoutResult = await recommendAi({ snapshot, learningGoal: "" });
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ recommendations: [] }), { status: 200 }),
+    );
+    const invalidResult = await recommendAi({ snapshot, learningGoal: "" });
+
+    expect(timeoutResult).toMatchObject({
+      ok: false,
+      error: { code: "TIMEOUT" },
+    });
+    expect(invalidResult).toMatchObject({
+      ok: false,
+      error: { code: "INVALID_RESPONSE" },
     });
   });
 

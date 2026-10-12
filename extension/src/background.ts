@@ -2,13 +2,19 @@ import {
   registerCaptureMessageHandler,
   setCaptureTarget,
 } from "./capture/capture-service";
-import { commitNote, ingestPageSnapshot, previewNote } from "./backend/api-client";
+import {
+  commitNote,
+  ingestPageSnapshot,
+  previewNote,
+  recommendAi,
+} from "./backend/api-client";
 import { ensureTrustedStorageAccess } from "./backend/storage";
 import {
   isPageIngestRequest,
   isNoteCommitRequest,
   isNotePreviewRequest,
-  type BackendClientResult,
+  isAiRecommendRequest,
+  type BackendClientFailure,
 } from "./backend/types";
 
 function getProtocol(value: string | undefined): string | null {
@@ -78,11 +84,31 @@ export function registerBackendMessageHandler(): void {
       return true;
     }
 
+    if (isAiRecommendRequest(message)) {
+      if (!message.cloudConsent) {
+        sendResponse({
+          ok: false,
+          error: {
+            code: "CLOUD_CONSENT_REQUIRED",
+            message: "请先确认将当前页面内容发送到云端 AI 分析。",
+          },
+        } satisfies BackendClientFailure);
+        return false;
+      }
+      void recommendAi({
+        snapshot: message.snapshot,
+        learningGoal: message.learningGoal,
+      })
+        .then(sendResponse)
+        .catch(() => sendResponse(backendUnknownError()));
+      return true;
+    }
+
     return false;
   });
 }
 
-function backendUnknownError(): BackendClientResult {
+function backendUnknownError(): BackendClientFailure {
   return {
     ok: false,
     error: { code: "UNKNOWN_ERROR", message: "本地服务请求失败，请重试。" },

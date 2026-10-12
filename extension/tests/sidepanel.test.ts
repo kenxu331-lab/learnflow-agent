@@ -12,6 +12,15 @@ const snapshot: PageSnapshot = {
   stats: { characterCount: 14, codeBlockCount: 0, blockCount: 1 },
 };
 
+const recommendationSnapshot: PageSnapshot = {
+  ...snapshot,
+  blocks: [
+    { id: "block-1", type: "heading", text: "Core concept", level: 2 },
+    { id: "block-2", type: "paragraph", text: "Supporting detail." },
+  ],
+  stats: { characterCount: 30, codeBlockCount: 0, blockCount: 2 },
+};
+
 function setupDom(): void {
   document.body.innerHTML = `
     <button id="capture-button" type="button">采集当前页面</button>
@@ -33,6 +42,14 @@ function setupDom(): void {
       <div id="block-list"></div>
       <textarea id="personal-note"></textarea>
       <button id="preview-note-button" type="button" disabled>预览</button>
+    </section>
+    <section id="ai-recommendation-panel" hidden>
+      <input id="ai-cloud-consent" type="checkbox" />
+      <textarea id="learning-goal"></textarea>
+      <button id="ai-recommend-button" type="button" disabled>AI 分析</button>
+      <div id="ai-recommendation-list"></div>
+      <button id="apply-ai-recommendations" type="button" disabled>应用推荐</button>
+      <p id="ai-status"></p>
     </section>
     <section id="note-preview-panel" hidden>
       <p id="note-action"></p><p id="note-path"></p>
@@ -266,6 +283,140 @@ describe("side panel visibility state", () => {
       type: "NOTE_COMMIT_REQUEST",
       proposalId: "proposal-1",
     });
+  });
+
+  it("requires visible cloud consent before sending an AI recommendation request", async () => {
+    setupDom();
+    const sendMessage = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      snapshot,
+    });
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#ai-recommendation-panel")?.hidden).toBe(
+        false,
+      );
+    });
+    const aiButton = document.querySelector<HTMLButtonElement>("#ai-recommend-button")!;
+    expect(aiButton.disabled).toBe(true);
+    aiButton.click();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+
+    document.querySelector<HTMLInputElement>("#ai-cloud-consent")?.click();
+    expect(aiButton.disabled).toBe(false);
+  });
+
+  it("renders recommendations and merges applied block IDs without opening note preview", async () => {
+    setupDom();
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot: recommendationSnapshot })
+      .mockResolvedValueOnce({
+        ok: true,
+        response: {
+          schemaVersion: 1,
+          recommendations: [
+            {
+              blockId: "block-1",
+              category: "core_concept",
+              reason: "解释核心机制。",
+            },
+          ],
+          analysis: {
+            model: "fake-deepseek-flash",
+            analyzedBlockCount: 2,
+            truncated: false,
+          },
+        },
+      });
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#selection-panel")?.hidden).toBe(false);
+    });
+    const manualCheckboxes = document.querySelectorAll<HTMLInputElement>(
+      "#block-list input",
+    );
+    manualCheckboxes[1].click();
+    document.querySelector<HTMLInputElement>("#ai-cloud-consent")?.click();
+    document.querySelector<HTMLButtonElement>("#ai-recommend-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelectorAll("#ai-recommendation-list input")).toHaveLength(1);
+    });
+
+    expect(document.querySelector<HTMLElement>("#ai-status")?.textContent).toContain(
+      "已推荐 1 个重点",
+    );
+    document.querySelector<HTMLButtonElement>("#apply-ai-recommendations")?.click();
+    expect(document.querySelectorAll<HTMLInputElement>("#block-list input")[0].checked).toBe(
+      true,
+    );
+    expect(document.querySelectorAll<HTMLInputElement>("#block-list input")[1].checked).toBe(
+      true,
+    );
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it("discards a delayed AI response after the learning goal changes", async () => {
+    setupDom();
+    let resolveAi: (value: unknown) => void = () => undefined;
+    const pendingAi = new Promise<unknown>((resolve) => {
+      resolveAi = resolve;
+    });
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot })
+      .mockReturnValueOnce(pendingAi);
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#ai-recommendation-panel")?.hidden).toBe(
+        false,
+      );
+    });
+    document.querySelector<HTMLInputElement>("#ai-cloud-consent")?.click();
+    document.querySelector<HTMLButtonElement>("#ai-recommend-button")?.click();
+    const goal = document.querySelector<HTMLTextAreaElement>("#learning-goal")!;
+    goal.value = "新的学习目标";
+    goal.dispatchEvent(new Event("input", { bubbles: true }));
+
+    resolveAi({
+      ok: true,
+      response: {
+        schemaVersion: 1,
+        recommendations: [
+          { blockId: "block-1", category: "core_concept", reason: "旧结果" },
+        ],
+        analysis: {
+          model: "fake-deepseek-flash",
+          analyzedBlockCount: 1,
+          truncated: false,
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(document.querySelectorAll("#ai-recommendation-list input")).toHaveLength(0);
+    expect(document.querySelector<HTMLElement>("#ai-status")?.textContent).toBe(
+      "学习目标已变化，请重新分析",
+    );
   });
 
   it("invalidates a proposal when the note changes or a new capture starts", async () => {
