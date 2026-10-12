@@ -19,6 +19,7 @@ import {
 } from "../backend/types";
 import {
   STUDY_ENABLE_REQUEST,
+  STUDY_GET_STATE_REQUEST,
   STUDY_PAUSE_REQUEST,
   STUDY_REVOKE_REQUEST,
   STUDY_MANUAL_SNAPSHOT_REQUEST,
@@ -38,6 +39,7 @@ function requiredElement<T extends Element>(selector: string): T {
   return element;
 }
 
+const panelRoot = requiredElement<HTMLElement>(".sidepanel");
 const captureButton = requiredElement<HTMLButtonElement>("#capture-button");
 const captureStatus = requiredElement<HTMLElement>("#capture-status");
 const resultPanel = requiredElement<HTMLElement>("#result-panel");
@@ -95,19 +97,40 @@ const studyRevokeButton = requiredElement<HTMLButtonElement>(
 const studyPermissionStatus = requiredElement<HTMLElement>(
   "#study-permission-status",
 );
+const settingsButton = requiredElement<HTMLButtonElement>("#settingsBtn");
+const settingsPanel = requiredElement<HTMLElement>("#settings");
+const chatView = requiredElement<HTMLElement>("#chatView");
+const notesView = requiredElement<HTMLElement>("#notesView");
+const composerArea = requiredElement<HTMLElement>("#composerArea");
+const chatInput = requiredElement<HTMLTextAreaElement>("#chatInput");
+const chatSendButton = requiredElement<HTMLButtonElement>("#chat-send-button");
+const chatUnavailableStatus = requiredElement<HTMLElement>("#chat-unready-status");
+const emptyNote = requiredElement<HTMLElement>("#emptyNote");
+const emptyNoteHint = requiredElement<HTMLElement>("#empty-note-hint");
+const noteDocument = requiredElement<HTMLElement>("#noteDocument");
+const notesState = requiredElement<HTMLElement>("#notesState");
+const noteCount = requiredElement<HTMLElement>("#noteCount");
+const organizeNoteButton = requiredElement<HTMLButtonElement>("#organize-note-button");
+const aiAnnotateButton = requiredElement<HTMLButtonElement>("#ai-annotate-button");
+const unreadySheet = requiredElement<HTMLElement>("#unready-sheet");
+const unreadyMessage = requiredElement<HTMLElement>("#unready-message");
+const closeUnreadyButton = requiredElement<HTMLButtonElement>("#close-unready");
 
 let currentSnapshot: PageSnapshot | undefined;
 let sending = false;
 let activeProposalId: string | undefined;
 let selectedBlockIds = new Set<string>();
-let notePreviewBusy = false;
 let noteStateGeneration = 0;
+let noteRequestSequence = 0;
+let notePreviewBusyRequestId: number | undefined;
+let noteCommitBusyRequestId: number | undefined;
 let aiRecommendations: AIRecommendationItem[] = [];
 let aiSelectedBlockIds = new Set<string>();
 let aiBusy = false;
 let aiStateGeneration = 0;
 let studyState: StudyState = createDefaultStudyState();
 let studyActionBusy = false;
+let studyStateRevision = 0;
 
 serviceUrl.value = LOCAL_INGEST_URL;
 
@@ -137,13 +160,21 @@ function renderStudyState(nextState: StudyState): void {
   studyEnableButton.hidden = nextState.enabled;
   studyPauseButton.hidden = !nextState.enabled;
   studyRevokeButton.hidden = !nextState.authorizedOrigin;
-  studyChapter.textContent = nextState.currentSession?.pageTitle ?? "—";
-  studyCapturedAt.textContent = nextState.currentSession?.capturedAt ?? "—";
-  studyError.hidden = !nextState.lastError;
-  studyError.textContent = nextState.lastError ?? "";
+  studyChapter.textContent =
+    nextState.currentSession?.pageTitle ??
+    (nextState.enabled ? "正在等待当前教程章节" : "启用此网站的学习模式");
+  studyCapturedAt.textContent = nextState.currentSession?.capturedAt
+    ? `· ${formatCaptureTime(nextState.currentSession.capturedAt)}`
+    : "";
+  const warning = nextState.currentSnapshot?.extraction.warnings[0];
+  studyError.hidden = !nextState.lastError && !warning;
+  studyError.textContent = nextState.lastError ?? warning ?? "";
   studySite.textContent = nextState.currentSession
-    ? `当前来源：${nextState.currentSession.sourceUrl}`
-    : "仅支持用户授权的 fastapi.tiangolo.com 教程页面。";
+    ? `正在学习 · ${new URL(nextState.currentSession.sourceUrl).hostname.toUpperCase()}`
+    : "尚未授权教程网站";
+  studyEnableButton.textContent = nextState.authorizedOrigin
+    ? "恢复自动学习"
+    : "启用此网站的学习模式";
 
   if (nextState.currentSnapshot) {
     const currentKey = snapshotViewKey(currentSnapshot);
@@ -153,6 +184,48 @@ function renderStudyState(nextState: StudyState): void {
   } else if (currentSnapshot) {
     clearCurrentSnapshotView();
   }
+  updateWorkspaceAvailability();
+}
+
+function formatCaptureTime(value: string): string {
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return "最近已采集";
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(timestamp);
+}
+
+function updateWorkspaceAvailability(): void {
+  const available = Boolean(currentSnapshot?.blocks.length);
+  organizeNoteButton.disabled = !available || isNoteBusy();
+  aiAnnotateButton.disabled = false;
+  chatSendButton.disabled = true;
+  chatInput.disabled = true;
+  emptyNoteHint.textContent = available
+    ? "无需逐个勾选内容块。原文整理会保留当前已采集的全部有效内容，并先生成预览。"
+    : studyState.enabled
+      ? "正在等待当前章节采集完成；采集成功后这里会启用原文整理。"
+      : "请先在当前教程网站启用学习模式，等待章节采集完成后再整理原文。";
+  chatUnavailableStatus.textContent = available
+    ? "对话能力即将接入。当前不会发送问题，也不会模拟 AI 回复。"
+    : "等待当前章节采集后，对话上下文将显示在这里；对话能力尚未接入。";
+}
+
+function showUnavailable(feature: string): void {
+  unreadyMessage.textContent = `${feature}尚未接入。当前不会调用 DeepSeek，也不会模拟成功。`;
+  unreadySheet.hidden = false;
+}
+
+function setWorkspaceTab(name: "chat" | "notes"): void {
+  document.querySelectorAll<HTMLButtonElement>(".main-tabs [data-tab]").forEach((button) => {
+    const active = button.dataset.tab === name;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-current", active ? "page" : "false");
+  });
+  chatView.classList.toggle("active", name === "chat");
+  notesView.classList.toggle("active", name === "notes");
+  composerArea.classList.toggle("hide", name !== "chat");
 }
 
 async function refreshStudyPermissionStatus(): Promise<void> {
@@ -170,8 +243,11 @@ async function refreshStudyPermissionStatus(): Promise<void> {
 }
 
 async function loadStudyUi(): Promise<void> {
-  studyState = await loadStudyState();
-  renderStudyState(studyState);
+  const revisionAtStart = studyStateRevision;
+  const loadedState = await loadStudyState();
+  if (revisionAtStart === studyStateRevision) {
+    renderStudyState(loadedState);
+  }
   await refreshStudyPermissionStatus();
 }
 
@@ -271,14 +347,49 @@ async function revokeStudyMode(): Promise<void> {
 function invalidateNoteProposal(status = "需要重新生成预览"): void {
   noteStateGeneration += 1;
   activeProposalId = undefined;
+  notePreviewBusyRequestId = undefined;
+  noteCommitBusyRequestId = undefined;
   notePreviewPanel.hidden = true;
   commitNoteButton.disabled = true;
   noteStatus.textContent = status;
 }
 
-function revealNotePreviewPanel(): void {
+function isNoteBusy(): boolean {
+  return (
+    notePreviewBusyRequestId !== undefined || noteCommitBusyRequestId !== undefined
+  );
+}
+
+function updateNoteBusyControls(): void {
+  previewNoteButton.disabled = selectedBlockIds.size === 0 || isNoteBusy();
+  if (noteCommitBusyRequestId !== undefined) {
+    commitNoteButton.disabled = true;
+  }
+}
+
+function revealNotePreviewPanel(phase: "loading" | "success"): void {
+  emptyNote.classList.add("hide");
+  noteDocument.classList.remove("hide");
+  notesState.textContent = phase === "loading" ? "生成中" : "预览已生成";
+  noteCount.textContent = phase === "loading" ? "0" : "1";
+  setWorkspaceTab("notes");
   notePreviewPanel.hidden = false;
   notePreviewPanel.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
+}
+
+function showNotePreviewFailure(message: string): void {
+  setWorkspaceTab("notes");
+  emptyNote.classList.add("hide");
+  noteDocument.classList.remove("hide");
+  notesState.textContent = "生成失败";
+  noteCount.textContent = "0";
+  noteAction.textContent = "无法生成当前章节预览 · 下一步：检查本地服务、Token 和 Vault 配置后重试。";
+  notePath.textContent = "";
+  markdownPreview.textContent = "";
+  markdownDiff.textContent = "";
+  commitNoteButton.disabled = true;
+  notePreviewPanel.hidden = false;
+  noteStatus.textContent = message;
 }
 
 function updateAiControls(): void {
@@ -359,7 +470,7 @@ function renderWarnings(warnings: string[]): void {
 
 function updateSelectionState(): void {
   selectionCount.textContent = `已选择 ${selectedBlockIds.size} 个内容块`;
-  previewNoteButton.disabled = selectedBlockIds.size === 0 || notePreviewBusy;
+  previewNoteButton.disabled = selectedBlockIds.size === 0 || isNoteBusy();
   invalidateNoteProposal();
 }
 
@@ -390,6 +501,7 @@ function renderBlockList(snapshot: PageSnapshot): void {
 
 function renderSnapshot(snapshot: PageSnapshot): void {
   const preview = snapshot.blocks.map((block) => block.text).join("\n\n");
+  invalidateNoteProposal("当前章节已更新，需要重新生成预览");
   currentSnapshot = snapshot;
   selectedBlockIds = new Set();
   activeProposalId = undefined;
@@ -411,6 +523,11 @@ function renderSnapshot(snapshot: PageSnapshot): void {
   notePreviewPanel.hidden = true;
   commitNoteButton.disabled = true;
   noteStatus.textContent = "需要先生成预览";
+  emptyNote.classList.remove("hide");
+  noteDocument.classList.add("hide");
+  notesState.textContent = "尚未生成";
+  noteCount.textContent = "0";
+  updateWorkspaceAvailability();
 }
 
 function clearCurrentSnapshotView(): void {
@@ -427,6 +544,11 @@ function clearCurrentSnapshotView(): void {
   commitNoteButton.disabled = true;
   invalidateAiRecommendations("等待当前章节重新采集");
   invalidateNoteProposal("等待当前章节重新采集");
+  emptyNote.classList.remove("hide");
+  noteDocument.classList.add("hide");
+  notesState.textContent = "尚未生成";
+  noteCount.textContent = "0";
+  updateWorkspaceAvailability();
 }
 
 function renderError(message: string): void {
@@ -595,17 +717,45 @@ async function sendCurrentSnapshot(): Promise<void> {
   }
 }
 
+async function organizeCurrentChapter(): Promise<void> {
+  await refreshCurrentStudyState();
+  if (!currentSnapshot || currentSnapshot.blocks.length === 0 || isNoteBusy()) {
+    updateWorkspaceAvailability();
+    return;
+  }
+  selectedBlockIds = new Set(currentSnapshot.blocks.map((block) => block.id));
+  personalNote.value = "";
+  updateSelectionState();
+  await generateNotePreview();
+}
+
+async function refreshCurrentStudyState(): Promise<void> {
+  if (!studyState.enabled) return;
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: STUDY_GET_STATE_REQUEST,
+    });
+    if (isStudyStateChangedMessage(response)) {
+      studyStateRevision += 1;
+      renderStudyState(response.state);
+    }
+  } catch {
+    // The existing local snapshot remains usable when the worker is unavailable.
+  }
+}
+
 async function generateNotePreview(): Promise<void> {
-  if (!currentSnapshot || selectedBlockIds.size === 0 || notePreviewBusy) return;
+  if (!currentSnapshot || selectedBlockIds.size === 0 || isNoteBusy()) return;
   const generation = noteStateGeneration;
-  notePreviewBusy = true;
-  previewNoteButton.disabled = true;
+  const requestId = ++noteRequestSequence;
+  notePreviewBusyRequestId = requestId;
+  updateNoteBusyControls();
   noteAction.textContent = "";
   notePath.textContent = "";
   markdownPreview.textContent = "";
   markdownDiff.textContent = "";
   commitNoteButton.disabled = true;
-  revealNotePreviewPanel();
+  revealNotePreviewPanel("loading");
   noteStatus.textContent = "正在生成预览…";
   try {
     const response = (await chrome.runtime.sendMessage({
@@ -614,17 +764,22 @@ async function generateNotePreview(): Promise<void> {
       selectedBlockIds: [...selectedBlockIds],
       personalNote: personalNote.value,
     })) as NoteClientResult | undefined;
-    if (generation !== noteStateGeneration) return;
+    if (
+      generation !== noteStateGeneration ||
+      notePreviewBusyRequestId !== requestId
+    ) {
+      return;
+    }
     if (!response) {
-      noteStatus.textContent = "预览失败，请重试";
+      showNotePreviewFailure("未收到本地服务响应；请确认 FastAPI 已启动后重试。");
       return;
     }
     if (!response.ok) {
-      noteStatus.textContent = response.error.message;
+      showNotePreviewFailure(response.error.message);
       return;
     }
     if (!("proposalId" in response.response)) {
-      noteStatus.textContent = "预览响应结构无效，请重试";
+      showNotePreviewFailure("本地服务返回的预览结构无效，请重试。");
       return;
     }
     activeProposalId = response.response.proposalId;
@@ -632,33 +787,46 @@ async function generateNotePreview(): Promise<void> {
     notePath.textContent = `目标：${response.response.targetRelativePath}`;
     markdownPreview.textContent = response.response.markdownPreview;
     markdownDiff.textContent = response.response.diff || "无变更";
-    revealNotePreviewPanel();
+    revealNotePreviewPanel("success");
     commitNoteButton.disabled = response.response.action === "noop";
     noteStatus.textContent =
       response.response.action === "noop" ? "当前内容无需写入" : "请确认后保存";
   } catch {
-    if (generation === noteStateGeneration) {
-      noteStatus.textContent = "预览请求失败，请重试";
+    if (
+      generation === noteStateGeneration &&
+      notePreviewBusyRequestId === requestId
+    ) {
+      showNotePreviewFailure("无法连接本地服务；请启动 FastAPI、配置 Token 和 Vault 后重试。");
     }
   } finally {
-    notePreviewBusy = false;
-    previewNoteButton.disabled = selectedBlockIds.size === 0;
+    if (notePreviewBusyRequestId === requestId) {
+      notePreviewBusyRequestId = undefined;
+      updateNoteBusyControls();
+      updateWorkspaceAvailability();
+    }
   }
 }
 
 async function commitNote(): Promise<void> {
-  if (!activeProposalId || notePreviewBusy) return;
+  if (!activeProposalId || isNoteBusy()) return;
   const generation = noteStateGeneration;
   const proposalId = activeProposalId;
-  notePreviewBusy = true;
+  const requestId = ++noteRequestSequence;
+  noteCommitBusyRequestId = requestId;
   commitNoteButton.disabled = true;
+  updateNoteBusyControls();
   noteStatus.textContent = "保存中…";
   try {
     const response = (await chrome.runtime.sendMessage({
       type: NOTE_COMMIT_REQUEST,
       proposalId,
     })) as NoteClientResult | undefined;
-    if (generation !== noteStateGeneration) return;
+    if (
+      generation !== noteStateGeneration ||
+      noteCommitBusyRequestId !== requestId
+    ) {
+      return;
+    }
     if (!response) {
       noteStatus.textContent = "保存失败，请重试";
       return;
@@ -679,17 +847,22 @@ async function commitNote(): Promise<void> {
       return;
     }
     noteStatus.textContent = `保存完成：${response.response.status}`;
+    notesState.textContent = "已保存";
     activeProposalId = undefined;
   } catch {
-    if (generation === noteStateGeneration) {
+    if (
+      generation === noteStateGeneration &&
+      noteCommitBusyRequestId === requestId
+    ) {
       noteStatus.textContent = "保存请求失败，请重试";
     }
   } finally {
-    notePreviewBusy = false;
-    if (generation === noteStateGeneration) {
+    if (noteCommitBusyRequestId === requestId) {
+      noteCommitBusyRequestId = undefined;
       commitNoteButton.disabled = !activeProposalId;
+      updateNoteBusyControls();
+      updateWorkspaceAvailability();
     }
-    previewNoteButton.disabled = selectedBlockIds.size === 0;
   }
 }
 
@@ -715,8 +888,51 @@ studyEnableButton.addEventListener("click", () => void enableStudyMode());
 studyPauseButton.addEventListener("click", () => void pauseStudyMode());
 studyRevokeButton.addEventListener("click", () => void revokeStudyMode());
 
+document.querySelectorAll<HTMLButtonElement>(".main-tabs [data-tab]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const tab = button.dataset.tab;
+    if (tab === "chat" || tab === "notes") setWorkspaceTab(tab);
+  });
+});
+
+panelRoot.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const actionButton = target.closest<HTMLButtonElement>("button[data-action]");
+  if (actionButton?.dataset.action === "make-note") {
+    void organizeCurrentChapter();
+  } else if (actionButton?.dataset.action === "ai-annotate") {
+    showUnavailable("AI 注解当前小节");
+  }
+});
+
+document.querySelectorAll<HTMLButtonElement>("button[data-prompt]").forEach((button) => {
+  button.addEventListener("click", () => {
+    chatInput.value = button.dataset.prompt ?? "";
+    chatInput.focus();
+  });
+});
+
+settingsButton.addEventListener("click", (event) => {
+  event.stopPropagation();
+  settingsPanel.hidden = !settingsPanel.hidden;
+});
+panelRoot.addEventListener("click", (event) => {
+  const target = event.target;
+  if (target instanceof Node && !settingsPanel.contains(target) && !settingsButton.contains(target)) {
+    settingsPanel.hidden = true;
+  }
+});
+closeUnreadyButton.addEventListener("click", () => {
+  unreadySheet.hidden = true;
+});
+unreadySheet.addEventListener("click", (event) => {
+  if (event.target === unreadySheet) unreadySheet.hidden = true;
+});
+
 chrome.runtime?.onMessage?.addListener((message) => {
   if (isStudyStateChangedMessage(message)) {
+    studyStateRevision += 1;
     renderStudyState(message.state);
   }
   return false;

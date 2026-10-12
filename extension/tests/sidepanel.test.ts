@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import type { PageCaptureResponse, PageSnapshot } from "../src/capture/types";
+import type { StudyState } from "../src/study/types";
 
 const snapshot: PageSnapshot = {
   schemaVersion: 1,
@@ -23,6 +26,9 @@ const recommendationSnapshot: PageSnapshot = {
 
 function setupDom(): void {
   document.body.innerHTML = `
+    <main class="sidepanel">
+    <button id="settingsBtn" type="button">设置</button>
+    <div id="settings" hidden></div>
     <button id="capture-button" type="button">采集当前页面</button>
     <p id="capture-status">等待操作</p>
     <section id="study-panel">
@@ -37,6 +43,23 @@ function setupDom(): void {
       <button id="study-revoke-button" type="button" hidden>撤销</button>
       <p id="study-permission-status"></p>
     </section>
+    <nav class="main-tabs">
+      <button class="tab active" data-tab="chat" type="button"></button>
+      <button class="tab" data-tab="notes" type="button"></button>
+    </nav>
+    <section id="chatView" class="view active">
+      <div id="chatList"></div>
+      <p id="chat-unready-status"></p>
+    </section>
+    <section id="notesView" class="view">
+      <p id="notesState"></p><span id="noteCount">0</span>
+      <div id="emptyNote"><p id="empty-note-hint"></p></div>
+      <div id="noteDocument" class="hide"></div>
+      <button id="organize-note-button" data-action="make-note" type="button" disabled>整理</button>
+      <button id="ai-annotate-button" data-action="ai-annotate" type="button">注解</button>
+    </section>
+    <div id="composerArea"><textarea id="chatInput"></textarea><button id="chat-send-button" type="button" disabled>发送</button></div>
+    <div id="unready-sheet" hidden><p id="unready-message"></p><button id="close-unready" type="button">关闭</button></div>
     <section id="result-panel" hidden>
       <p id="page-title"></p><p id="page-url"></p>
       <p id="character-count"></p><p id="code-block-count"></p>
@@ -70,6 +93,7 @@ function setupDom(): void {
       <p id="note-status"></p>
     </section>
     <div id="error-panel" hidden><p id="error-message"></p></div>
+    </main>
   `;
 }
 
@@ -84,6 +108,25 @@ async function loadSidePanel(response: PageCaptureResponse): Promise<void> {
 describe("side panel visibility state", () => {
   beforeEach(() => {
     vi.resetModules();
+  });
+
+  it("initializes from the real sidepanel.html DOM contract", async () => {
+    const html = readFileSync(resolve(process.cwd(), "sidepanel.html"), "utf8");
+    document.body.innerHTML = new DOMParser().parseFromString(html, "text/html").body.innerHTML;
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage: vi.fn(), onMessage: { addListener: vi.fn() } },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+      permissions: { contains: vi.fn().mockResolvedValue(false) },
+    });
+
+    await import("../src/sidepanel/main");
+
+    expect(document.querySelector(".sidepanel")).not.toBeNull();
+    expect(document.querySelector("#study-chapter")).not.toBeNull();
+    expect(document.querySelector("#chatView")).not.toBeNull();
+    expect(document.querySelector("#notesView")).not.toBeNull();
+    expect(document.querySelector("#note-preview-panel")).not.toBeNull();
+    expect(document.querySelector("#chatInput")).not.toBeNull();
   });
 
   it("starts with result, warning, and error panels hidden", () => {
@@ -761,6 +804,462 @@ describe("side panel visibility state", () => {
     expect(document.querySelector<HTMLButtonElement>("#commit-note-button")?.disabled).toBe(
       true,
     );
+  });
+
+  it("keeps chat disabled and clearly marks AI annotation as not ready", async () => {
+    setupDom();
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage: vi.fn() },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+      permissions: { contains: vi.fn().mockResolvedValue(false) },
+    });
+    await import("../src/sidepanel/main");
+
+    expect(document.querySelector<HTMLTextAreaElement>("#chatInput")?.disabled).toBe(true);
+    document.querySelector<HTMLButtonElement>("#ai-annotate-button")?.click();
+    expect(document.querySelector<HTMLElement>("#unready-sheet")?.hidden).toBe(false);
+    expect(document.querySelector<HTMLElement>("#unready-message")?.textContent).toContain(
+      "AI 注解当前小节",
+    );
+  });
+
+  it("organizes all current blocks through the real Note Preview request", async () => {
+    setupDom();
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot: recommendationSnapshot })
+      .mockResolvedValueOnce({
+        ok: true,
+        response: {
+          proposalId: "proposal-all-blocks",
+          action: "create",
+          noteId: "learnflow-1",
+          targetRelativePath: "LearnFlow/example.md",
+          markdownPreview: "# Current chapter",
+          diff: "+# Current chapter",
+          expectedRevision: null,
+          expiresAt: "2026-10-12T20:00:00Z",
+        },
+      });
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+      permissions: { contains: vi.fn().mockResolvedValue(false) },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#selection-panel")?.hidden).toBe(false);
+    });
+    document.querySelector<HTMLButtonElement>("#organize-note-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#note-preview-panel")?.hidden).toBe(false);
+    });
+
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(sendMessage.mock.calls[1][0]).toMatchObject({
+      type: "NOTE_PREVIEW_REQUEST",
+      selectedBlockIds: ["block-1", "block-2"],
+      personalNote: "",
+    });
+  });
+
+  it("keeps the original-note action disabled with a persistent no-snapshot explanation", async () => {
+    setupDom();
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage: vi.fn() },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+      permissions: { contains: vi.fn().mockResolvedValue(false) },
+    });
+    await import("../src/sidepanel/main");
+
+    expect(document.querySelector<HTMLButtonElement>("#organize-note-button")?.disabled).toBe(
+      true,
+    );
+    expect(document.querySelector<HTMLElement>("#empty-note-hint")?.textContent).toContain(
+      "启用学习模式",
+    );
+  });
+
+  it("shows a persistent connection error when original-note preview fails", async () => {
+    setupDom();
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot: recommendationSnapshot })
+      .mockResolvedValueOnce({
+        ok: false,
+        error: { code: "NETWORK_ERROR", message: "本地服务不可用" },
+      });
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+      permissions: { contains: vi.fn().mockResolvedValue(false) },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLButtonElement>("#organize-note-button")?.disabled).toBe(
+        false,
+      );
+    });
+    document.querySelector<HTMLButtonElement>("#organize-note-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#note-status")?.textContent).toContain(
+        "本地服务不可用",
+      );
+    });
+    expect(document.querySelector<HTMLElement>("#notesState")?.textContent).toBe("生成失败");
+    expect(document.querySelector<HTMLElement>("#note-preview-panel")?.hidden).toBe(false);
+  });
+
+  it("previews and commits the original note through the existing proposal flow", async () => {
+    setupDom();
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot: recommendationSnapshot })
+      .mockResolvedValueOnce({
+        ok: true,
+        response: {
+          proposalId: "proposal-chat-first",
+          action: "create",
+          noteId: "learnflow-1",
+          targetRelativePath: "LearnFlow/example.md",
+          markdownPreview: "# Current chapter",
+          diff: "+# Current chapter",
+          expectedRevision: null,
+          expiresAt: "2026-10-12T20:00:00Z",
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        response: {
+          status: "created",
+          noteId: "learnflow-1",
+          targetRelativePath: "LearnFlow/example.md",
+          revision: "sha256:new",
+        },
+      });
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+      permissions: { contains: vi.fn().mockResolvedValue(false) },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLButtonElement>("#organize-note-button")?.disabled).toBe(
+        false,
+      );
+    });
+    document.querySelector<HTMLButtonElement>("#organize-note-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLButtonElement>("#commit-note-button")?.disabled).toBe(
+        false,
+      );
+    });
+    expect(document.querySelector<HTMLElement>("#markdown-preview")?.textContent).toBe(
+      "# Current chapter",
+    );
+    document.querySelector<HTMLButtonElement>("#commit-note-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#note-status")?.textContent).toContain(
+        "保存完成",
+      );
+    });
+    expect(sendMessage.mock.calls.map(([message]) => message.type)).toEqual([
+      "PAGE_CAPTURE_REQUEST",
+      "NOTE_PREVIEW_REQUEST",
+      "NOTE_COMMIT_REQUEST",
+    ]);
+  });
+
+  it("allows chapter B to preview while chapter A preview is still pending", async () => {
+    setupDom();
+    const snapshotA = recommendationSnapshot;
+    const snapshotB: PageSnapshot = {
+      ...recommendationSnapshot,
+      url: "https://example.com/chapter-b",
+      title: "Chapter B",
+      blocks: [{ id: "block-b", type: "paragraph", text: "B content." }],
+      stats: { characterCount: 10, codeBlockCount: 0, blockCount: 1 },
+    };
+    const makeState = (snapshotValue: PageSnapshot, id: string): StudyState => ({
+      schemaVersion: 1,
+      enabled: true,
+      status: "SOURCE_READY",
+      authorizedOrigin: "https://fastapi.tiangolo.com",
+      activeTabId: 7,
+      sessionsByChapter: {},
+      snapshotsByChapter: {},
+      currentSession: {
+        sessionId: id,
+        tabId: 7,
+        chapterId: id,
+        sourceUrl: snapshotValue.url,
+        pageTitle: snapshotValue.title,
+        snapshotHash: id,
+        capturedAt: snapshotValue.capturedAt,
+        updatedAt: snapshotValue.capturedAt,
+        status: "SOURCE_READY",
+      },
+      currentSnapshot: snapshotValue,
+    });
+    const stateA = makeState(snapshotA, "chapter-a");
+    const stateB = makeState(snapshotB, "chapter-b");
+    let currentState = stateA;
+    let resolveA: (value: unknown) => void = () => undefined;
+    let resolveB: (value: unknown) => void = () => undefined;
+    const pendingA = new Promise<unknown>((resolve) => {
+      resolveA = resolve;
+    });
+    const pendingB = new Promise<unknown>((resolve) => {
+      resolveB = resolve;
+    });
+    const onMessage = vi.fn();
+    const sendMessage = vi.fn().mockImplementation((message: { type: string; snapshot?: PageSnapshot }) => {
+      if (message.type === "STUDY_GET_STATE_REQUEST") {
+        return Promise.resolve({ type: "STUDY_STATE_CHANGED", state: currentState });
+      }
+      if (message.type === "NOTE_PREVIEW_REQUEST") {
+        return message.snapshot?.url === snapshotA.url ? pendingA : pendingB;
+      }
+      return Promise.resolve(undefined);
+    });
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage, onMessage: { addListener: onMessage } },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+      permissions: { contains: vi.fn().mockResolvedValue(false) },
+    });
+    await import("../src/sidepanel/main");
+
+    onMessage.mock.calls[0][0]({ type: "STUDY_STATE_CHANGED", state: stateA });
+    document.querySelector<HTMLButtonElement>("#organize-note-button")?.click();
+    await vi.waitFor(() => {
+      expect(sendMessage.mock.calls.some(([message]) => message.type === "NOTE_PREVIEW_REQUEST")).toBe(
+        true,
+      );
+    });
+
+    currentState = stateB;
+    onMessage.mock.calls[0][0]({ type: "STUDY_STATE_CHANGED", state: stateB });
+    document.querySelector<HTMLButtonElement>("#organize-note-button")?.click();
+    await vi.waitFor(() => {
+      expect(sendMessage.mock.calls.filter(([message]) => message.type === "NOTE_PREVIEW_REQUEST")).toHaveLength(2);
+    });
+
+    resolveA({
+      ok: true,
+      response: {
+        proposalId: "proposal-a",
+        action: "create",
+        noteId: "note-a",
+        targetRelativePath: "LearnFlow/a.md",
+        markdownPreview: "# A",
+        diff: "+# A",
+        expectedRevision: null,
+        expiresAt: "2026-10-12T20:00:00Z",
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(document.querySelector<HTMLElement>("#markdown-preview")?.textContent).toBe("");
+
+    resolveB({
+      ok: true,
+      response: {
+        proposalId: "proposal-b",
+        action: "create",
+        noteId: "note-b",
+        targetRelativePath: "LearnFlow/b.md",
+        markdownPreview: "# B",
+        diff: "+# B",
+        expectedRevision: null,
+        expiresAt: "2026-10-12T20:00:00Z",
+      },
+    });
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#markdown-preview")?.textContent).toBe("# B");
+    });
+    expect(document.querySelector<HTMLElement>("#notesState")?.textContent).toBe("预览已生成");
+  });
+
+  it("clears an old snapshot view when StudyState reports a failed new chapter", async () => {
+    setupDom();
+    const onMessage = vi.fn();
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage: vi.fn(), onMessage: { addListener: onMessage } },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+      permissions: { contains: vi.fn().mockResolvedValue(false) },
+    });
+    await import("../src/sidepanel/main");
+
+    const stateWithSnapshot: StudyState = {
+      schemaVersion: 1,
+      enabled: true,
+      status: "SOURCE_READY",
+      authorizedOrigin: "https://fastapi.tiangolo.com",
+      activeTabId: 7,
+      sessionsByChapter: {},
+      snapshotsByChapter: {},
+      currentSession: {
+        sessionId: "session-1",
+        tabId: 7,
+        chapterId: "chapter-1",
+        sourceUrl: snapshot.url,
+        pageTitle: snapshot.title,
+        snapshotHash: "content-1",
+        capturedAt: snapshot.capturedAt,
+        updatedAt: snapshot.capturedAt,
+        status: "SOURCE_READY",
+      },
+      currentSnapshot: snapshot,
+    };
+    onMessage.mock.calls[0][0]({ type: "STUDY_STATE_CHANGED", state: stateWithSnapshot });
+    expect(document.querySelector<HTMLElement>("#result-panel")?.hidden).toBe(false);
+    expect(document.querySelector<HTMLElement>("#study-chapter")?.textContent).toBe(
+      "Tutorial",
+    );
+
+    const failedState: StudyState = {
+      ...stateWithSnapshot,
+      status: "CAPTURE_FAILED",
+      currentSession: undefined,
+      currentSnapshot: undefined,
+      lastError: "B 页面采集失败",
+    };
+    onMessage.mock.calls[0][0]({ type: "STUDY_STATE_CHANGED", state: failedState });
+    expect(document.querySelector<HTMLElement>("#result-panel")?.hidden).toBe(true);
+    expect(document.querySelector<HTMLElement>("#study-error")?.textContent).toContain(
+      "B 页面采集失败",
+    );
+  });
+
+  it("invalidates a delayed preview response after a new chapter arrives", async () => {
+    setupDom();
+    let resolvePreview: (value: unknown) => void = () => undefined;
+    const pendingPreview = new Promise<unknown>((resolve) => {
+      resolvePreview = resolve;
+    });
+    const onMessage = vi.fn();
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot })
+      .mockReturnValueOnce(pendingPreview);
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage, onMessage: { addListener: onMessage } },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+      permissions: { contains: vi.fn().mockResolvedValue(false) },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLButtonElement>("#organize-note-button")?.disabled).toBe(
+        false,
+      );
+    });
+    document.querySelector<HTMLButtonElement>("#organize-note-button")?.click();
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(2));
+
+    const chapterB = { ...snapshot, url: "https://example.com/other", title: "Chapter B" };
+    const stateB: StudyState = {
+      schemaVersion: 1,
+      enabled: true,
+      status: "SOURCE_READY",
+      authorizedOrigin: "https://fastapi.tiangolo.com",
+      activeTabId: 7,
+      sessionsByChapter: {},
+      snapshotsByChapter: {},
+      currentSession: {
+        sessionId: "session-b",
+        tabId: 7,
+        chapterId: "chapter-b",
+        sourceUrl: chapterB.url,
+        pageTitle: chapterB.title,
+        snapshotHash: "hash-b",
+        capturedAt: chapterB.capturedAt,
+        updatedAt: chapterB.capturedAt,
+        status: "SOURCE_READY",
+      },
+      currentSnapshot: chapterB,
+    };
+    onMessage.mock.calls[0][0]({ type: "STUDY_STATE_CHANGED", state: stateB });
+    resolvePreview({
+      ok: true,
+      response: {
+        proposalId: "old-proposal",
+        action: "create",
+        noteId: "old-note",
+        targetRelativePath: "LearnFlow/old.md",
+        markdownPreview: "old chapter",
+        diff: "+old",
+        expectedRevision: null,
+        expiresAt: "2026-10-12T20:00:00Z",
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(document.querySelector<HTMLElement>("#noteDocument")?.classList.contains("hide")).toBe(
+      true,
+    );
+    expect(document.querySelector<HTMLButtonElement>("#commit-note-button")?.disabled).toBe(
+      true,
+    );
+    expect(document.querySelector<HTMLElement>("#markdown-preview")?.textContent).toBe("");
+  });
+
+  it("does not let initial storage hydration overwrite a newer StudyState message", async () => {
+    setupDom();
+    let resolveStorage: (value: unknown) => void = () => undefined;
+    const delayedStorage = new Promise<unknown>((resolve) => {
+      resolveStorage = resolve;
+    });
+    const onMessage = vi.fn();
+    const storageGet = vi
+      .fn()
+      .mockResolvedValueOnce({})
+      .mockReturnValueOnce(delayedStorage);
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage: vi.fn(), onMessage: { addListener: onMessage } },
+      storage: { local: { get: storageGet } },
+      permissions: { contains: vi.fn().mockResolvedValue(false) },
+    });
+    await import("../src/sidepanel/main");
+
+    const liveState: StudyState = {
+      schemaVersion: 1,
+      enabled: true,
+      status: "SOURCE_READY",
+      authorizedOrigin: "https://fastapi.tiangolo.com",
+      activeTabId: 7,
+      sessionsByChapter: {},
+      snapshotsByChapter: {},
+      currentSession: {
+        sessionId: "live-session",
+        tabId: 7,
+        chapterId: "live-chapter",
+        sourceUrl: snapshot.url,
+        pageTitle: "Live Chapter",
+        snapshotHash: "live-hash",
+        capturedAt: snapshot.capturedAt,
+        updatedAt: snapshot.capturedAt,
+        status: "SOURCE_READY",
+      },
+      currentSnapshot: { ...snapshot, title: "Live Chapter" },
+    };
+    onMessage.mock.calls[0][0]({ type: "STUDY_STATE_CHANGED", state: liveState });
+    resolveStorage({ learnflowStudyState: { enabled: false, status: "DISABLED" } });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(document.querySelector<HTMLElement>("#study-chapter")?.textContent).toBe(
+      "Live Chapter",
+    );
+    expect(document.querySelector<HTMLElement>("#result-panel")?.hidden).toBe(false);
   });
 
   it("ignores a delayed preview response after the selection state changes", async () => {
