@@ -21,6 +21,7 @@ body {
 }
 
 .panel-header,
+.study-card,
 .capture-card,
 .result-panel,
 .connection-card,
@@ -30,6 +31,41 @@ body {
 .message-panel {
   display: grid;
   gap: 0.75rem;
+}
+
+.study-card {
+  border: 1px solid #bfdbfe;
+  border-radius: 0.65rem;
+  padding: 0.85rem;
+  background: #eff6ff;
+}
+
+.study-card-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.study-indicator {
+  color: #64748b;
+  font-size: 1.4rem;
+  line-height: 1;
+}
+
+.study-details {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.study-details div {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.study-actions {
+  display: grid;
+  gap: 0.45rem;
 }
 
 h1,

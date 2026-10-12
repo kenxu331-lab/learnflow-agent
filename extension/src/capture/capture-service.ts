@@ -17,6 +17,10 @@ export function setCaptureTarget(tabId: number | undefined): void {
   preferredCaptureTabId = tabId;
 }
 
+export function getCaptureTarget(): number | undefined {
+  return preferredCaptureTabId;
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -245,28 +249,11 @@ function classifyInjectionError(
   return failure("INJECTION_FAILED", `页面采集脚本执行失败：${message}`);
 }
 
-export async function captureCurrentPage(): Promise<PageCaptureResponse> {
-  let initialLookup: TabLookupResult;
-  try {
-    initialLookup = await getActiveTab();
-  } catch (error) {
-    return failure("UNKNOWN_ERROR", `无法读取当前标签页：${errorMessage(error)}`);
-  }
-
-  if (initialLookup.preferredTargetClosed) {
-    logCaptureStage("preferred-tab-closed", undefined, {
-      preferredTabId: preferredCaptureTabId,
-    });
-    return failure("STALE_TAB", "目标标签页已关闭，请重新点击扩展工具栏图标。");
-  }
-
-  const initialTab = initialLookup.tab;
-
-  if (!initialTab) {
-    logCaptureStage("no-active-tab", undefined);
-    return failure("NO_ACTIVE_TAB", "没有找到可采集的当前标签页。");
-  }
-
+async function captureFromInitialTab(
+  initialTab: chrome.tabs.Tab,
+  verifyActiveTarget: boolean,
+  shouldContinue: () => boolean | Promise<boolean> = () => true,
+): Promise<PageCaptureResponse> {
   logCaptureStage("active-tab-observed", initialTab);
 
   if (!Number.isInteger(initialTab.id)) {
@@ -286,6 +273,10 @@ export async function captureCurrentPage(): Promise<PageCaptureResponse> {
     logCaptureStage("tab-url-unavailable", initialTab);
   }
 
+  if (!(await shouldContinue())) {
+    return failure("STALE_TAB", "采集任务已取消，请重新采集当前页面。");
+  }
+
   let injectionResults: chrome.scripting.InjectionResult<PageSnapshot>[];
   try {
     logCaptureStage("injection-start", initialTab);
@@ -300,19 +291,32 @@ export async function captureCurrentPage(): Promise<PageCaptureResponse> {
     return classifyInjectionError(error, initialTab);
   }
 
-  let currentLookup: TabLookupResult;
-  try {
-    currentLookup = await getActiveTab();
-  } catch (error) {
-    return failure("UNKNOWN_ERROR", `无法确认采集页面状态：${errorMessage(error)}`);
+  if (!(await shouldContinue())) {
+    return failure("STALE_TAB", "采集任务已取消，请重新采集当前页面。");
   }
 
-  if (currentLookup.preferredTargetClosed) {
-    logCaptureStage("preferred-tab-closed-during-capture", initialTab);
+  let currentTab: chrome.tabs.Tab | undefined;
+  try {
+    if (verifyActiveTarget) {
+      const currentLookup = await getActiveTab();
+      if (currentLookup.preferredTargetClosed) {
+        logCaptureStage("preferred-tab-closed-during-capture", initialTab);
+        return failure("STALE_TAB", "采集期间目标标签页已关闭，请重新采集。");
+      }
+      currentTab = currentLookup.tab;
+    } else {
+      currentTab = await chrome.tabs.get(initialTab.id as number);
+    }
+  } catch (error) {
+    logCaptureStage("tab-closed-during-capture", initialTab, {
+      originalError: redactDiagnosticText(errorMessage(error)),
+    });
     return failure("STALE_TAB", "采集期间目标标签页已关闭，请重新采集。");
   }
 
-  const currentTab = currentLookup.tab;
+  if (!(await shouldContinue())) {
+    return failure("STALE_TAB", "采集任务已取消，请重新采集当前页面。");
+  }
 
   const snapshot = injectionResults[0]?.result;
   if (!isPageSnapshot(snapshot)) {
@@ -356,6 +360,69 @@ export async function captureCurrentPage(): Promise<PageCaptureResponse> {
     characterCount: snapshot.stats.characterCount,
   });
   return { ok: true, snapshot };
+}
+
+export async function captureCurrentPage(): Promise<PageCaptureResponse> {
+  let initialLookup: TabLookupResult;
+  try {
+    initialLookup = await getActiveTab();
+  } catch (error) {
+    return failure("UNKNOWN_ERROR", `无法读取当前标签页：${errorMessage(error)}`);
+  }
+
+  if (initialLookup.preferredTargetClosed) {
+    logCaptureStage("preferred-tab-closed", undefined, {
+      preferredTabId: preferredCaptureTabId,
+    });
+    return failure("STALE_TAB", "目标标签页已关闭，请重新点击扩展工具栏图标。");
+  }
+
+  const initialTab = initialLookup.tab;
+  if (!initialTab) {
+    logCaptureStage("no-active-tab", undefined);
+    return failure("NO_ACTIVE_TAB", "没有找到可采集的当前标签页。");
+  }
+
+  return captureFromInitialTab(initialTab, true);
+}
+
+export async function captureTab(
+  tabId: number,
+  options: { shouldContinue?: () => boolean | Promise<boolean> } = {},
+): Promise<PageCaptureResponse> {
+  if (!Number.isInteger(tabId) || tabId < 0) {
+    return failure("NO_ACTIVE_TAB", "当前标签页缺少有效的 tabId。");
+  }
+
+  let initialTab: chrome.tabs.Tab;
+  try {
+    initialTab = await chrome.tabs.get(tabId);
+  } catch {
+    return failure("STALE_TAB", "目标标签页已关闭，请重新采集。");
+  }
+
+  if (options.shouldContinue && !(await options.shouldContinue())) {
+    return failure("STALE_TAB", "采集任务已取消，请重新采集当前页面。");
+  }
+
+  let verifiedTab: chrome.tabs.Tab;
+  try {
+    verifiedTab = await chrome.tabs.get(tabId);
+  } catch {
+    return failure("STALE_TAB", "目标标签页已关闭，请重新采集。");
+  }
+
+  if (options.shouldContinue && !(await options.shouldContinue())) {
+    return failure("STALE_TAB", "采集任务已取消，请重新采集当前页面。");
+  }
+
+  const initialUrl = getTabUrl(initialTab);
+  const verifiedUrl = getTabUrl(verifiedTab);
+  if (initialUrl && verifiedUrl && initialUrl !== verifiedUrl) {
+    return failure("STALE_TAB", "采集前页面已经变化，请重新采集。");
+  }
+
+  return captureFromInitialTab(verifiedTab, false, options.shouldContinue);
 }
 
 export function registerCaptureMessageHandler(): void {

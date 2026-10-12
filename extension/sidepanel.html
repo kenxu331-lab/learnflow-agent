@@ -12,10 +12,50 @@
         <p id="status" role="status">Environment Ready</p>
       </header>
 
+      <section class="study-card" aria-labelledby="study-title">
+        <div class="study-card-heading">
+          <div>
+            <h2 id="study-title">当前学习</h2>
+            <p id="study-status" class="capture-status" role="status">
+              自动学习未启用
+            </p>
+          </div>
+          <span id="study-indicator" class="study-indicator" aria-hidden="true">○</span>
+        </div>
+        <p id="study-site" class="muted">
+          仅支持用户授权的 fastapi.tiangolo.com 教程页面。
+        </p>
+        <dl class="study-details">
+          <div>
+            <dt>当前章节</dt>
+            <dd id="study-chapter">—</dd>
+          </div>
+          <div>
+            <dt>最近采集</dt>
+            <dd id="study-captured-at">—</dd>
+          </div>
+        </dl>
+        <p id="study-error" class="capture-status" role="status" hidden></p>
+        <div class="study-actions">
+          <button id="study-enable-button" type="button">
+            在此网站启用学习模式
+          </button>
+          <button id="study-pause-button" type="button" class="secondary-button" hidden>
+            暂停自动学习
+          </button>
+          <button id="study-revoke-button" type="button" class="secondary-button" hidden>
+            撤销此网站授权
+          </button>
+        </div>
+        <p id="study-permission-status" class="muted" role="status">
+          站点权限与云端 AI 授权相互独立。
+        </p>
+      </section>
+
       <section class="capture-card" aria-labelledby="capture-title">
         <h2 id="capture-title">M01-01 单页教程采集</h2>
-        <p class="muted">仅采集当前授权页面，不会修改网页内容。</p>
-        <button id="capture-button" type="button">采集当前页面</button>
+        <p class="muted">自动学习的后备入口；仅采集当前授权页面，不会修改网页内容。</p>
+        <button id="capture-button" type="button">手动采集当前页面</button>
         <p id="capture-status" class="capture-status" role="status">等待操作</p>
       </section>
 
