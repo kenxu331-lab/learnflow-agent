@@ -11,7 +11,15 @@
     "webNavigation"
   ],
   "host_permissions": ["http://127.0.0.1/*"],
-  "optional_host_permissions": ["https://fastapi.tiangolo.com/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://fastapi.tiangolo.com/*"],
+      "js": ["assets/shadow-mermaid-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ],
   "action": {
     "default_title": "Open LearnFlow Agent"
   },

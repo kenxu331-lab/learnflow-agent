@@ -190,6 +190,90 @@ def test_url_normalization_and_identity_are_stable_when_title_changes() -> None:
     assert resolver.resolve("https://example.com/other").note_id != first.note_id
 
 
+def test_resolver_prefers_readable_title_and_keeps_legacy_path() -> None:
+    resolver = NoteResolver()
+    identity = resolver.resolve(
+        "https://fastapi.tiangolo.com/zh/tutorial/body/",
+        "请求体¶",
+    )
+
+    assert identity.target_relative_path == "LearnFlow/fastapi.tiangolo.com/请求体.md"
+    assert "--" not in identity.target_relative_path
+    assert identity.legacy_target_relative_path.endswith(
+        "body--247b9f568555b1ab86e7.md"
+    )
+
+
+def test_resolver_uses_browser_title_for_site_specific_filename() -> None:
+    identity = NoteResolver().resolve(
+        "https://www.runoob.com/python/python-loops.html",
+        "Python 循环语句 | 菜鸟教程",
+    )
+
+    assert identity.target_relative_path == (
+        "LearnFlow/www.runoob.com/Python-循环语句-_-菜鸟教程.md"
+    )
+
+
+def test_resolver_falls_back_to_url_slug_for_unusable_title() -> None:
+    identity = NoteResolver().resolve(
+        "https://example.com/tutorial",
+        "CON",
+    )
+
+    assert identity.target_relative_path == "LearnFlow/example.com/tutorial.md"
+
+
+def test_same_title_for_different_urls_uses_a_short_hash_collision_suffix(
+    note_service,
+) -> None:
+    first = NotePreviewRequest.model_validate(preview_payload())
+    first_proposal, first_identity = note_service.preview(first)
+    note_service.commit(first_proposal.proposal_id)
+
+    second_payload = snapshot_payload()
+    second_payload["url"] = "https://example.com/another-tutorial"
+    second = NotePreviewRequest.model_validate(
+        preview_payload(snapshot=second_payload)
+    )
+    second_proposal, second_identity = note_service.preview(second)
+
+    assert first_identity.target_relative_path.endswith("/Tutorial.md")
+    assert second_identity.target_relative_path != first_identity.target_relative_path
+    assert second_identity.target_relative_path.startswith(
+        "LearnFlow/example.com/Tutorial--"
+    )
+    assert second_proposal.action == "create"
+
+
+def test_existing_legacy_slug_hash_file_is_reused_without_renaming(
+    note_service, vault: Path
+) -> None:
+    request = NotePreviewRequest.model_validate(preview_payload())
+    identity = NoteResolver().resolve(request.snapshot.url, request.snapshot.title)
+    legacy_path = vault_note_path(vault, identity.legacy_target_relative_path)
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(
+        build_new_document(
+            identity,
+            request.snapshot,
+            note_service._selected_blocks(request),
+            request.personalNote,
+            request.snapshot.capturedAt,
+        ),
+        encoding="utf-8",
+    )
+
+    proposal, selected_identity = note_service.preview(request)
+
+    assert (
+        selected_identity.target_relative_path
+        == identity.legacy_target_relative_path
+    )
+    assert proposal.action == "noop"
+    assert not (vault / "LearnFlow" / "example.com" / "Tutorial.md").exists()
+
+
 def test_resolver_and_vault_reject_dangerous_paths(vault: Path) -> None:
     guard = VaultGuard(Settings(vault_path=str(vault)))
     for relative_path in (
@@ -499,7 +583,7 @@ def test_personal_region_whitespace_is_preserved_when_appending(
     assert "\nsecond\n" in normalized
 
 
-def test_unmanaged_or_damaged_notes_are_not_overwritten(
+def test_unmanaged_notes_are_not_overwritten(
     note_service, vault: Path
 ) -> None:
     request = NotePreviewRequest.model_validate(preview_payload())
@@ -507,18 +591,10 @@ def test_unmanaged_or_damaged_notes_are_not_overwritten(
     path = vault_note_path(vault, identity.target_relative_path)
     path.parent.mkdir(parents=True)
     path.write_text("# User file\n", encoding="utf-8")
-    with pytest.raises(NoteServiceError, match="拒绝覆盖"):
-        note_service.preview(request)
-
-    path.write_text(
-        "---\nlearnflow_id: "
-        + identity.note_id
-        + "\n---\n"
-        + "<!-- LEARNFLOW_CONTROLLED_BEGIN -->\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(NoteServiceError, match="标记"):
-        note_service.preview(request)
+    proposal, collision_identity = note_service.preview(request)
+    assert proposal.action == "create"
+    assert collision_identity.target_relative_path != identity.target_relative_path
+    assert path.read_text(encoding="utf-8") == "# User file\n"
 
 
 def test_preview_then_external_change_returns_conflict(

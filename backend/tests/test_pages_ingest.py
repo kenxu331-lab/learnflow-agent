@@ -253,3 +253,64 @@ def test_streaming_body_limit_without_content_length() -> None:
 
     events = asyncio.run(run_test())
     assert events[0]["status"] == 413
+
+
+def test_request_body_replay_does_not_fake_disconnect_for_streaming_responses() -> None:
+    async def run_test() -> tuple[list[dict[str, object]], int]:
+        events: list[dict[str, object]] = []
+        messages = iter(
+            [
+                {
+                    "type": "http.request",
+                    "body": b'{"question":"hello"}',
+                    "more_body": False,
+                },
+                {"type": "http.disconnect"},
+            ]
+        )
+        receive_calls = 0
+
+        async def receive() -> dict[str, object]:
+            nonlocal receive_calls
+            receive_calls += 1
+            return next(messages)
+
+        async def send(message: dict[str, object]) -> None:
+            events.append(message)
+
+        async def downstream(scope, replayed_receive, send) -> None:
+            first = await replayed_receive()
+            second = await replayed_receive()
+            assert first["type"] == "http.request"
+            assert second["type"] == "http.disconnect"
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b"ok",
+                    "more_body": False,
+                }
+            )
+
+        app = RequestSizeLimitMiddleware(downstream, max_bytes=100)
+        await app(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": INGEST_PATH,
+                "headers": [(b"content-type", b"application/json")],
+            },
+            receive,
+            send,
+        )
+        return events, receive_calls
+
+    events, receive_calls = asyncio.run(run_test())
+    assert receive_calls == 2
+    assert events[-1]["more_body"] is False

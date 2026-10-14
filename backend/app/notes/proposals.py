@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from secrets import token_urlsafe
 from threading import RLock
@@ -20,6 +20,7 @@ class NoteProposal:
     markdown: str
     diff: str
     expires_at: datetime
+    assets: dict[str, str] = field(default_factory=dict)
     completed: dict[str, str] | None = None
 
 
@@ -44,6 +45,7 @@ class ProposalStore:
         expected_revision: str | None,
         markdown: str,
         diff: str,
+        assets: dict[str, str] | None = None,
     ) -> NoteProposal:
         now = datetime.now(UTC)
         with self._lock:
@@ -58,6 +60,7 @@ class ProposalStore:
                 expected_revision=expected_revision,
                 markdown=markdown,
                 diff=diff,
+                assets=dict(assets or {}),
                 expires_at=now + self.ttl,
             )
             self._items[proposal.proposal_id] = proposal

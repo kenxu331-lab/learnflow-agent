@@ -29,7 +29,7 @@
             <span id="study-captured-at" class="context-time"></span>
           </div>
           <p id="study-error" class="context-warning" role="status" hidden></p>
-          <button id="study-enable-button" class="context-action" type="button">启用此网站的学习模式</button>
+          <button id="study-enable-button" class="context-action" type="button">采集当前页面</button>
         </div>
       </section>
 
@@ -43,17 +43,17 @@
       </nav>
 
       <section id="chatView" class="view active" aria-label="学习对话">
-        <div id="chatList" class="chat-list">
+        <div id="chat-intro" class="chat-intro">
           <div class="small-label">当前章节学习工作台</div>
           <div class="assistant-line">
             <div class="avatar" aria-hidden="true"><svg class="ic"><use href="#i-sparkle" /></svg></div>
             <div class="msg-content">
               <div class="msg-title">LearnFlow <small>学习工作台</small></div>
-              <p id="chat-welcome">当前章节准备好后，你可以从原文整理开始；对话式学习能力即将接入。</p>
+              <p id="chat-welcome">我是 LearnFlow Study Agent，擅长解释当前章节、分析代码、引用页面选区并支持连续追问。本轮对话不会自动写入 Obsidian。</p>
               <div class="quick-grid">
                 <button class="quick" data-action="make-note" type="button">
                   <span class="quick-icon green"><svg class="ic"><use href="#i-note" /></svg></span>
-                  <b>整理原文笔记</b><span>0 Token · 保留代码</span>
+                  <b>整理并保存当前章节</b><span>0 Token · 保留代码</span>
                 </button>
                 <button class="quick" data-action="ai-annotate" type="button">
                   <span class="quick-icon"><svg class="ic"><use href="#i-sparkle" /></svg></span>
@@ -66,8 +66,14 @@
               </div>
             </div>
           </div>
+        </div>
+        <div id="chat-scroll" class="chat-scroll">
+          <div id="chatList" class="chat-list">
           <div id="chat-unready-status" class="unready-card" role="status">
-            对话能力即将接入。当前不会发送问题，也不会模拟 AI 回复。
+            等待当前章节采集后即可开始 Study Chat。
+          </div>
+          <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
+          <div id="note-action-status" class="unready-card" role="status" hidden></div>
           </div>
         </div>
       </section>
@@ -75,7 +81,31 @@
       <section id="notesView" class="view" aria-label="学习笔记">
         <div class="notes-wrap">
           <div class="notes-top"><h2>学习笔记</h2><span id="notesState" class="notes-badge">尚未生成</span></div>
-          <div id="emptyNote" class="note-empty">
+          <section class="document-v2-card" aria-labelledby="document-v2-title">
+            <div class="document-v2-head">
+              <div>
+                <div class="overline">LEARNFLOW / CURRENT CHAPTER</div>
+                <h3 id="document-v2-title">整理并保存当前章节</h3>
+              </div>
+              <button id="document-v2-preview-button" class="btn-primary" type="button" disabled>生成预览</button>
+            </div>
+            <p id="document-v2-status" class="note-status" role="status">需要先采集当前章节</p>
+            <div id="document-v2-preview-panel" hidden>
+              <p id="document-v2-action" class="note-action"></p>
+              <p id="document-v2-path" class="note-source"></p>
+              <p id="document-v2-source" class="note-source"></p>
+              <p id="document-v2-diagnostics" class="document-v2-diagnostics"></p>
+              <button id="document-export-diagnostics-button" class="btn-outline" type="button" hidden>导出诊断</button>
+              <pre id="document-v2-markdown" class="content-preview"></pre>
+              <details class="diff-details"><summary>查看 Diff</summary><pre id="document-v2-diff" class="content-preview"></pre></details>
+              <div class="note-actions">
+                <button id="document-v2-commit-button" class="btn-primary" type="button" disabled>确认保存笔记</button>
+              </div>
+              <p id="document-v2-commit-status" class="note-status" role="status">请先生成预览</p>
+              <p class="explain">预览内容会按确认结果保存；替换已有笔记时会显示风险提示。</p>
+            </div>
+          </section>
+          <div id="emptyNote" class="note-empty" hidden>
             <span class="note-empty-icon" aria-hidden="true"><svg class="ic"><use href="#i-note" /></svg></span>
             <h3>从当前章节开始积累</h3>
             <p id="empty-note-hint">正在恢复当前学习章节；采集完成后即可整理全部有效原文。</p>
@@ -96,20 +126,25 @@
               <p id="note-status" class="note-status" role="status">需要先生成预览</p>
               </div>
             </div>
-            <p class="explain">当前为过渡版原文整理：仍使用现有 Note Preview/Commit，不代表新版 Document Engine 已接入。</p>
+            <p class="explain">兼容旧版笔记保存入口。</p>
           </div>
         </div>
       </section>
 
       <div id="composerArea" class="composer-area">
         <div class="composer">
-          <textarea id="chatInput" rows="2" aria-label="向学习助手提问" placeholder="问问当前教程中的任何问题…" disabled></textarea>
+          <textarea id="chatInput" rows="2" aria-label="向学习助手提问" placeholder="问问当前教程中的任何问题…（回车发送，Shift+Enter 换行）" disabled></textarea>
+          <div id="slash-command-menu" class="slash-command-menu" hidden role="listbox" aria-label="Agent 命令">
+            <button type="button" data-slash-command="提炼"><b>/提炼</b><span>查看当前章节待确认知识</span></button>
+            <button type="button" data-slash-command="查看提炼"><b>/查看提炼</b><span>查看知识内容和目标文件</span></button>
+            <button type="button" data-slash-command="归档"><b>/归档</b><span>选择一条知识并请求归档确认</span></button>
+          </div>
           <div class="composer-footer">
-            <span class="composer-caption"><svg class="ic"><use href="#i-lock" /></svg><span>对话能力尚未接入</span></span>
-            <button id="chat-send-button" class="send" type="button" aria-label="发送问题" title="对话能力尚未接入" disabled><svg class="ic"><use href="#i-up" /></svg></button>
+            <span class="composer-caption"><svg class="ic"><use href="#i-lock" /></svg><span id="composer-caption-text">会发送到 DeepSeek；当前选区会自动引用</span></span>
+            <button id="chat-send-button" class="send" type="button" aria-label="发送问题" title="发送问题" disabled><svg class="ic"><use href="#i-up" /></svg></button>
           </div>
         </div>
-        <div class="footer-note">问题不会发送到模型 · 当前仅支持本地原文整理</div>
+        <div class="footer-note">当前章节上下文会发送到 DeepSeek；学习记录保存在本地 SQLite</div>
       </div>
 
       <details id="advanced-tools" class="advanced-tools">
@@ -173,8 +208,10 @@
         <h3>学习设置</h3>
         <div class="setting-row"><span>自动跟随教程</span><button id="study-pause-button" class="setting-mini-btn" type="button" hidden>暂停</button></div>
         <div class="setting-row"><span>站点授权</span><button id="study-revoke-button" class="setting-mini-btn" type="button" hidden>撤销</button></div>
-        <p id="study-permission-status" class="setting-desc">站点权限与云端 AI 授权相互独立。</p>
-        <p class="setting-desc">对话和 AI 注解尚未接入，不会发送云端请求。</p>
+        <p id="study-permission-status" class="setting-desc">站点访问权限与 Study Chat 的发送目标相互独立。</p>
+        <p class="setting-desc">Study Chat 默认发送当前章节上下文；如果页面有选区，发送时会自动引用。</p>
+        <p class="setting-desc">知识提炼默认手动：输入 <code>/提炼</code>，或完成三轮对话后在卡片中点击“提炼知识”。</p>
+        <p class="setting-desc">知识归档默认手动：只有在知识卡片中点击“归档到笔记”才会写入 Markdown。</p>
       </div>
 
       <div id="toast" class="toast" role="status" aria-live="polite"></div>

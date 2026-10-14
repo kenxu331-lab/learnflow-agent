@@ -50,9 +50,20 @@ function setupDom(): void {
     <section id="chatView" class="view active">
       <div id="chatList"></div>
       <p id="chat-unready-status"></p>
+      <div id="note-action-status" hidden></div>
     </section>
     <section id="notesView" class="view">
       <p id="notesState"></p><span id="noteCount">0</span>
+      <button id="document-v2-preview-button" type="button" disabled>生成预览</button>
+      <p id="document-v2-status"></p>
+      <section id="document-v2-preview-panel" hidden>
+        <p id="document-v2-action"></p><p id="document-v2-path"></p>
+        <p id="document-v2-source"></p><p id="document-v2-diagnostics"></p>
+        <button id="document-export-diagnostics-button" type="button" hidden>导出诊断</button>
+        <pre id="document-v2-markdown"></pre><pre id="document-v2-diff"></pre>
+        <button id="document-v2-commit-button" type="button" disabled>确认保存笔记</button>
+        <p id="document-v2-commit-status"></p>
+      </section>
       <div id="emptyNote"><p id="empty-note-hint"></p></div>
       <div id="noteDocument" class="hide"></div>
       <button id="organize-note-button" data-action="make-note" type="button" disabled>整理</button>
@@ -126,7 +137,391 @@ describe("side panel visibility state", () => {
     expect(document.querySelector("#chatView")).not.toBeNull();
     expect(document.querySelector("#notesView")).not.toBeNull();
     expect(document.querySelector("#note-preview-panel")).not.toBeNull();
+    expect(document.querySelector("#document-v2-preview-button")).not.toBeNull();
     expect(document.querySelector("#chatInput")).not.toBeNull();
+    expect(document.querySelector("#chat-intro")).not.toBeNull();
+    expect(document.querySelector("#chat-scroll")).not.toBeNull();
+    expect(document.querySelector("#knowledge-consent-button")).toBeNull();
+  });
+
+  it("sends an authorized chapter question and renders streamed Study Agent text", async () => {
+    const studyState: StudyState = {
+      schemaVersion: 1,
+      enabled: true,
+      status: "SOURCE_READY",
+      authorizedOrigin: "https://example.com",
+      activeTabId: 7,
+      sessionsByChapter: {
+        "chapter-1": {
+          sessionId: "session-1",
+          tabId: 7,
+          chapterId: "chapter-1",
+          sourceUrl: snapshot.url,
+          pageTitle: snapshot.title,
+          snapshotHash: "content-1",
+          capturedAt: snapshot.capturedAt,
+          updatedAt: snapshot.capturedAt,
+          status: "SOURCE_READY",
+        },
+      },
+      snapshotsByChapter: { "chapter-1": snapshot },
+      currentSession: {
+        sessionId: "session-1",
+        tabId: 7,
+        chapterId: "chapter-1",
+        sourceUrl: snapshot.url,
+        pageTitle: snapshot.title,
+        snapshotHash: "content-1",
+        capturedAt: snapshot.capturedAt,
+        updatedAt: snapshot.capturedAt,
+        status: "SOURCE_READY",
+      },
+      currentSnapshot: snapshot,
+    };
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode('event: delta\ndata: {"text":"流式答案"}\n\n'),
+        );
+        controller.enqueue(
+          new TextEncoder().encode(
+            `event: done\ndata: ${JSON.stringify({
+              schemaVersion: 1,
+              conversationId: "conversation-session-1",
+              message: {
+                schemaVersion: 1,
+                messageId: "assistant-1",
+                role: "assistant",
+          content: "## 流式答案\n\n**重点**",
+                origin: "ai",
+                createdAt: snapshot.capturedAt,
+              },
+            })}\n\n`,
+          ),
+        );
+        controller.close();
+      },
+    });
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.includes("/conversations/")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              schemaVersion: 1,
+              conversationId: "conversation-session-1",
+              sessionId: "session-1",
+              sourceUrl: snapshot.url,
+              pageTitle: snapshot.title,
+              messages: [],
+            }),
+            { status: 200 },
+          ),
+        );
+      }
+      return Promise.resolve(
+        new Response(stream, {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: vi.fn(),
+        onMessage: { addListener: vi.fn() },
+      },
+      storage: {
+        local: {
+          get: vi.fn().mockImplementation((keys: unknown) => {
+            if (Array.isArray(keys)) {
+              return Promise.resolve({
+                learnflowStudyState: studyState,
+                learnflowStudySnapshots: {},
+              });
+            }
+            return Promise.resolve({
+              learnflowCloudLlmConsent: false,
+              localApiToken: "local-token",
+            });
+          }),
+          set: vi.fn().mockResolvedValue(undefined),
+          setAccessLevel: vi.fn().mockResolvedValue(undefined),
+        },
+      },
+      permissions: { contains: vi.fn().mockResolvedValue(false) },
+    });
+    const html = readFileSync(resolve(process.cwd(), "sidepanel.html"), "utf8");
+    document.body.innerHTML = new DOMParser().parseFromString(html, "text/html").body.innerHTML;
+    await import("../src/sidepanel/main");
+
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLTextAreaElement>("#chatInput")?.disabled).toBe(false);
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(document.querySelector("#chat-cloud-consent")).toBeNull();
+    expect(document.querySelector("#chat-selection-button")).toBeNull();
+    const input = document.querySelector<HTMLTextAreaElement>("#chatInput")!;
+    input.value = "解释当前代码";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#chat-messages")?.textContent).toContain(
+        "流式答案",
+      );
+    });
+    expect(document.querySelector("#chat-messages h2")).not.toBeNull();
+    expect(document.querySelector("#chat-messages strong")).not.toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/study/chat",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("keeps earlier turns when study state refreshes during a later stream", async () => {
+    const studyState: StudyState = {
+      schemaVersion: 1,
+      enabled: true,
+      status: "SOURCE_READY",
+      authorizedOrigin: "https://example.com",
+      activeTabId: 7,
+      sessionsByChapter: {
+        "chapter-1": {
+          sessionId: "session-1",
+          tabId: 7,
+          chapterId: "chapter-1",
+          sourceUrl: snapshot.url,
+          pageTitle: snapshot.title,
+          snapshotHash: "content-1",
+          capturedAt: snapshot.capturedAt,
+          updatedAt: snapshot.capturedAt,
+          status: "SOURCE_READY",
+        },
+      },
+      snapshotsByChapter: { "chapter-1": snapshot },
+      currentSession: {
+        sessionId: "session-1",
+        tabId: 7,
+        chapterId: "chapter-1",
+        sourceUrl: snapshot.url,
+        pageTitle: snapshot.title,
+        snapshotHash: "content-1",
+        capturedAt: snapshot.capturedAt,
+        updatedAt: snapshot.capturedAt,
+        status: "SOURCE_READY",
+      },
+      currentSnapshot: snapshot,
+    };
+    let stateListener: ((message: unknown) => void) | undefined;
+    let postCount = 0;
+    let resolveSecondStream: ((response: Response) => void) | undefined;
+    const secondStream = new Promise<Response>((resolve) => {
+      resolveSecondStream = resolve;
+    });
+    const streamResponse = (answer: string, messageId: string): Response => {
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(`event: delta\ndata: ${JSON.stringify({ text: answer })}\n\n`),
+          );
+          controller.enqueue(
+            new TextEncoder().encode(
+              `event: done\ndata: ${JSON.stringify({
+                schemaVersion: 1,
+                conversationId: "conversation-session-1",
+                message: {
+                  schemaVersion: 1,
+                  messageId,
+                  role: "assistant",
+                  content: answer,
+                  origin: "ai",
+                  createdAt: snapshot.capturedAt,
+                },
+              })}\n\n`,
+            ),
+          );
+          controller.close();
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    };
+    const conversationMessages = (includeTurns: boolean) =>
+      includeTurns
+        ? [
+            { schemaVersion: 1, role: "user", content: "第一轮问题", messageId: "user-1", origin: "user", createdAt: snapshot.capturedAt },
+            { schemaVersion: 1, role: "assistant", content: "第一轮回答", messageId: "assistant-1", origin: "ai", createdAt: snapshot.capturedAt },
+            { schemaVersion: 1, role: "user", content: "第二轮问题", messageId: "user-2", origin: "user", createdAt: snapshot.capturedAt },
+            { schemaVersion: 1, role: "assistant", content: "第二轮回答", messageId: "assistant-2", origin: "ai", createdAt: snapshot.capturedAt },
+          ]
+        : [];
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.includes("/conversations/")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              schemaVersion: 1,
+              conversationId: "conversation-session-1",
+              sessionId: "session-1",
+              sourceUrl: snapshot.url,
+              pageTitle: snapshot.title,
+              messages: conversationMessages(postCount > 1),
+            }),
+            { status: 200 },
+          ),
+        );
+      }
+      postCount += 1;
+      if (postCount === 1) return Promise.resolve(streamResponse("第一轮回答", "assistant-1"));
+      return secondStream;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: vi.fn().mockResolvedValue(undefined),
+        onMessage: {
+          addListener: vi.fn((listener: (message: unknown) => void) => {
+            stateListener = listener;
+          }),
+        },
+      },
+      storage: {
+        local: {
+          get: vi.fn().mockImplementation((keys: unknown) =>
+            Promise.resolve(
+              Array.isArray(keys)
+                ? { learnflowStudyState: studyState, learnflowStudySnapshots: {} }
+                : { localApiToken: "local-token" },
+            ),
+          ),
+        },
+      },
+      permissions: { contains: vi.fn().mockResolvedValue(false) },
+    });
+    const html = readFileSync(resolve(process.cwd(), "sidepanel.html"), "utf8");
+    document.body.innerHTML = new DOMParser().parseFromString(html, "text/html").body.innerHTML;
+    await import("../src/sidepanel/main");
+
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLTextAreaElement>("#chatInput")?.disabled).toBe(false);
+    });
+    const input = document.querySelector<HTMLTextAreaElement>("#chatInput")!;
+    input.value = "第一轮问题";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await vi.waitFor(() => expect(document.querySelector("#chat-messages")?.textContent).toContain("第一轮回答"));
+
+    input.value = "第二轮问题";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await vi.waitFor(() => expect(postCount).toBe(2));
+
+    const refreshedSnapshot = { ...snapshot, capturedAt: "2026-10-11T00:01:00.000Z" };
+    stateListener?.({
+      type: "STUDY_STATE_CHANGED",
+      state: { ...studyState, currentSnapshot: refreshedSnapshot, snapshotsByChapter: { "chapter-1": refreshedSnapshot } },
+    });
+    expect(document.querySelector("#chat-messages")?.textContent).toContain("第一轮回答");
+
+    resolveSecondStream?.(streamResponse("第二轮回答", "assistant-2"));
+    await vi.waitFor(() => {
+      expect(document.querySelector("#chat-messages")?.textContent).toContain("第二轮回答");
+    });
+    expect(document.querySelector("#chat-messages")?.textContent).toContain("第一轮回答");
+  });
+
+  it("previews and commits the real Document Engine V2 Markdown", async () => {
+    setupDom();
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot })
+      .mockResolvedValueOnce({
+        ok: true,
+        response: {
+          status: "preview",
+          schemaVersion: 2,
+          proposalId: "document-proposal-1",
+          action: "create",
+          noteId: "learnflow-1",
+          targetRelativePath: "LearnFlow/example.com/tutorial--hash.md",
+          diff: "+# Tutorial\n",
+          expectedRevision: null,
+          expiresAt: "2026-10-12T20:00:00Z",
+          title: "Tutorial",
+          sourceUrl: snapshot.url,
+          markdownPreview: "# Tutorial\n\n来源：<https://example.com/tutorial>\n",
+          diagnostics: {
+            renderedBlockCount: 1,
+            filteredBlockCount: 0,
+            unsupportedBlockCount: 0,
+            truncated: false,
+            warnings: [],
+            qualityStatus: "ok",
+            issues: [],
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        response: {
+          status: "created",
+          noteId: "learnflow-1",
+          targetRelativePath: "LearnFlow/example.com/tutorial--hash.md",
+          revision: "sha256:revision",
+        },
+      });
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(
+        document.querySelector<HTMLButtonElement>("#document-v2-preview-button")?.disabled,
+      ).toBe(false);
+    });
+    document.querySelector<HTMLButtonElement>("#document-v2-preview-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#document-v2-markdown")?.textContent).toContain(
+        "# Tutorial",
+      );
+    });
+    expect(document.querySelector<HTMLElement>("#chatView")?.classList.contains("active")).toBe(
+      true,
+    );
+    expect(document.querySelector<HTMLElement>("#note-action-status")?.textContent).toContain(
+      "预览已生成",
+    );
+
+    expect(sendMessage.mock.calls[1][0]).toEqual({
+      type: "DOCUMENT_PREVIEW_REQUEST",
+      snapshot,
+    });
+    expect(document.querySelector<HTMLElement>("#document-v2-status")?.textContent).toContain(
+      "预览已生成",
+    );
+    expect(document.querySelector<HTMLButtonElement>("#document-v2-commit-button")?.disabled).toBe(
+      false,
+    );
+    document.querySelector<HTMLButtonElement>("#document-v2-commit-button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLElement>("#document-v2-commit-status")?.textContent).toContain(
+        "已保存",
+      );
+    });
+    expect(sendMessage.mock.calls.map(([message]) => message.type)).toEqual([
+      "PAGE_CAPTURE_REQUEST",
+      "DOCUMENT_PREVIEW_REQUEST",
+      "DOCUMENT_COMMIT_REQUEST",
+    ]);
+    expect(document.querySelector<HTMLButtonElement>("#commit-note-button")?.disabled).toBe(
+      true,
+    );
   });
 
   it("starts with result, warning, and error panels hidden", () => {
@@ -228,6 +623,7 @@ describe("side panel visibility state", () => {
         enabled: true,
         status: "AUTHORIZED",
         authorizedOrigin: "https://fastapi.tiangolo.com",
+        url: "https://fastapi.tiangolo.com/zh/tutorial/body/",
         activeTabId: 7,
         sessionsByChapter: {},
         snapshotsByChapter: {},
@@ -253,6 +649,7 @@ describe("side panel visibility state", () => {
     expect(request).toHaveBeenCalledWith({
       origins: ["https://fastapi.tiangolo.com/*"],
     });
+    expect(request).toHaveBeenCalledTimes(1);
     expect(sendMessage).toHaveBeenCalledWith({ type: "STUDY_ENABLE_REQUEST" });
   });
 
@@ -1045,6 +1442,9 @@ describe("side panel visibility state", () => {
 
     currentState = stateB;
     onMessage.mock.calls[0][0]({ type: "STUDY_STATE_CHANGED", state: stateB });
+    expect(document.querySelector<HTMLElement>("#chatView")?.classList.contains("active")).toBe(
+      true,
+    );
     document.querySelector<HTMLButtonElement>("#organize-note-button")?.click();
     await vi.waitFor(() => {
       expect(sendMessage.mock.calls.filter(([message]) => message.type === "NOTE_PREVIEW_REQUEST")).toHaveLength(2);
@@ -1376,5 +1776,100 @@ describe("side panel visibility state", () => {
       "需要先生成预览",
     );
     expect(document.querySelector<HTMLElement>("#note-preview-panel")?.hidden).toBe(true);
+  });
+
+  it("discards a delayed Document Engine preview after a new chapter arrives", async () => {
+    setupDom();
+    let resolveDocument: (value: unknown) => void = () => undefined;
+    const pendingDocument = new Promise<unknown>((resolve) => {
+      resolveDocument = resolve;
+    });
+    const onMessage = vi.fn();
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot })
+      .mockReturnValueOnce(pendingDocument);
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage, onMessage: { addListener: onMessage } },
+      storage: { local: { get: vi.fn().mockResolvedValue({}) } },
+      permissions: { contains: vi.fn().mockResolvedValue(false) },
+    });
+    await import("../src/sidepanel/main");
+
+    document.querySelector<HTMLButtonElement>("#capture-button")?.click();
+    await vi.waitFor(() => {
+      expect(
+        document.querySelector<HTMLButtonElement>("#document-v2-preview-button")?.disabled,
+      ).toBe(false);
+    });
+    document.querySelector<HTMLButtonElement>("#document-v2-preview-button")?.click();
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(2));
+
+    const chapterB: PageSnapshot = {
+      ...snapshot,
+      url: "https://example.com/chapter-b",
+      title: "Chapter B",
+      blocks: [{ id: "block-b", type: "paragraph", text: "B content." }],
+      stats: { characterCount: 10, codeBlockCount: 0, blockCount: 1 },
+    };
+    const stateB: StudyState = {
+      schemaVersion: 1,
+      enabled: true,
+      status: "SOURCE_READY",
+      authorizedOrigin: "https://fastapi.tiangolo.com",
+      activeTabId: 7,
+      sessionsByChapter: {},
+      snapshotsByChapter: {},
+      currentSession: {
+        sessionId: "session-b",
+        tabId: 7,
+        chapterId: "chapter-b",
+        sourceUrl: chapterB.url,
+        pageTitle: chapterB.title,
+        snapshotHash: "hash-b",
+        capturedAt: chapterB.capturedAt,
+        updatedAt: chapterB.capturedAt,
+        status: "SOURCE_READY",
+      },
+      currentSnapshot: chapterB,
+    };
+    onMessage.mock.calls[0][0]({ type: "STUDY_STATE_CHANGED", state: stateB });
+
+    resolveDocument({
+      ok: true,
+      response: {
+        status: "preview",
+        schemaVersion: 2,
+        proposalId: "old-document-proposal",
+        action: "create",
+        noteId: "old-note",
+        targetRelativePath: "LearnFlow/old.md",
+        diff: "+old chapter",
+        expectedRevision: null,
+        expiresAt: "2026-10-12T20:00:00Z",
+        title: "Tutorial",
+        sourceUrl: snapshot.url,
+        markdownPreview: "old chapter",
+        diagnostics: {
+          renderedBlockCount: 1,
+          filteredBlockCount: 0,
+          unsupportedBlockCount: 0,
+          truncated: false,
+          warnings: [],
+          qualityStatus: "ok",
+          issues: [],
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(document.querySelector<HTMLElement>("#document-v2-preview-panel")?.hidden).toBe(
+      true,
+    );
+    expect(document.querySelector<HTMLElement>("#document-v2-markdown")?.textContent).toBe("");
+    expect(document.querySelector<HTMLElement>("#document-v2-status")?.textContent).toContain(
+      "可以整理并保存当前章节",
+    );
   });
 });

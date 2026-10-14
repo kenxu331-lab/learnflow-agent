@@ -1,5 +1,6 @@
 """Provider contract for OpenAI-compatible model services."""
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -14,7 +15,7 @@ class LLMCompletion:
 
 
 class LLMProvider(Protocol):
-    """Async JSON completion contract that can be replaced by a Fake Provider."""
+    """Async provider contract that can be replaced by a Fake Provider."""
 
     model: str
 
@@ -26,3 +27,11 @@ class LLMProvider(Protocol):
         max_output_tokens: int,
     ) -> LLMCompletion:
         """Return one JSON-mode completion without exposing provider details."""
+
+    async def stream_chat(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        max_output_tokens: int,
+    ) -> AsyncIterator[str]:
+        """Yield plain-text chat deltas in provider order."""

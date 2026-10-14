@@ -15,6 +15,9 @@ SECURED_POST_PATHS = {
     "/api/v1/notes/preview",
     "/api/v1/notes/commit",
     "/api/v1/ai/notes/recommend",
+    "/api/v1/study/chat",
+    "/api/v1/knowledge/consent",
+    "/api/v1/knowledge/trigger",
 }
 
 
@@ -99,10 +102,11 @@ class LocalRequestMiddleware:
             r"[a-p]{32}", parsed.netloc
         ):
             return True
-        return (
-            parsed.scheme in {"http", "https"}
-            and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
-        )
+        return parsed.scheme in {"http", "https"} and parsed.hostname in {
+            "127.0.0.1",
+            "localhost",
+            "::1",
+        }
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or scope.get("path") not in SECURED_POST_PATHS:
@@ -200,7 +204,10 @@ class RequestSizeLimitMiddleware:
         async def replay_receive() -> Message:
             nonlocal sent
             if sent:
-                return {"type": "http.disconnect"}
+                # Keep listening to the real client connection. Returning an
+                # immediate disconnect here cancels StreamingResponse after
+                # its 200 headers, before it can send the final body frame.
+                return await receive()
             sent = True
             return {"type": "http.request", "body": bytes(body), "more_body": False}
 

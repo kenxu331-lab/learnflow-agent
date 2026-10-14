@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   captureCurrentPage,
   isPageSnapshot,
+  readCurrentPageSelection,
   registerCaptureMessageHandler,
   setCaptureTarget,
 } from "../src/capture/capture-service";
@@ -66,7 +67,7 @@ describe("captureCurrentPage", () => {
     expect(executeScript).toHaveBeenCalledWith(
       expect.objectContaining({
         target: { tabId: activeTab.id },
-        func: expect.any(Function),
+        files: ["assets/mature-extractor.js"],
       }),
     );
   });
@@ -135,11 +136,95 @@ describe("captureCurrentPage", () => {
     });
   });
 
+  it("reads selected code with a chapter-aware source fingerprint", async () => {
+    query.mockResolvedValue([activeTab]);
+    executeScript.mockResolvedValue([
+      {
+        result: {
+          schemaVersion: 1,
+          text: "Annotated[str, Form()]",
+          sourceUrl: activeTab.url,
+          pageTitle: activeTab.title,
+          headingPath: ["Request forms"],
+          sourceNodeId: "pre-3",
+          sourceFingerprint: "selection-1234abcd",
+        },
+      },
+    ]);
+
+    const response = await readCurrentPageSelection();
+
+    expect(response).toMatchObject({
+      ok: true,
+      selection: {
+        text: "Annotated[str, Form()]",
+        headingPath: ["Request forms"],
+        sourceNodeId: "pre-3",
+      },
+    });
+    expect(executeScript).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: { tabId: activeTab.id },
+        func: expect.any(Function),
+      }),
+    );
+  });
+
+  it("requires an explicit selection before attaching source content", async () => {
+    query.mockResolvedValue([activeTab]);
+    executeScript.mockResolvedValue([{ result: null }]);
+
+    const response = await readCurrentPageSelection();
+
+    expect(response).toMatchObject({
+      ok: false,
+      error: { code: "NO_SELECTION" },
+    });
+  });
+
   it("rejects a result when the active page changes during capture", async () => {
     query
       .mockResolvedValueOnce([activeTab])
       .mockResolvedValueOnce([{ ...activeTab, url: "https://example.com/other" }]);
     executeScript.mockResolvedValue([{ result: snapshot }]);
+
+    const response = await captureCurrentPage();
+
+    expect(response).toMatchObject({
+      ok: false,
+      error: { code: "STALE_TAB" },
+    });
+  });
+
+  it("rejects a snapshot whose injected URL differs from the initial tab URL", async () => {
+    query.mockResolvedValue([activeTab]);
+    executeScript.mockResolvedValue([
+      { result: { ...snapshot, url: "https://example.com/other" } },
+    ]);
+
+    const response = await captureCurrentPage();
+
+    expect(response).toMatchObject({
+      ok: false,
+      error: { code: "STALE_TAB" },
+    });
+  });
+
+  it("blocks a request-forms snapshot from being saved with request-files as its source", async () => {
+    const formsTab = {
+      ...activeTab,
+      url: "https://fastapi.tiangolo.com/zh/tutorial/request-forms/",
+    };
+    query.mockResolvedValue([formsTab]);
+    executeScript.mockResolvedValue([
+      {
+        result: {
+          ...snapshot,
+          url: "https://fastapi.tiangolo.com/zh/tutorial/request-files/",
+          title: "Request files - FastAPI",
+        },
+      },
+    ]);
 
     const response = await captureCurrentPage();
 
@@ -160,6 +245,25 @@ describe("captureCurrentPage", () => {
       error: { code: "INVALID_RESULT" },
     });
     expect(isPageSnapshot({ unexpected: true })).toBe(false);
+  });
+
+  it("falls back when the bundled parser returns an empty injection result", async () => {
+    query.mockResolvedValue([activeTab]);
+    executeScript
+      .mockResolvedValueOnce([{ result: null }])
+      .mockResolvedValueOnce([{ result: undefined }])
+      .mockResolvedValueOnce([{ result: snapshot }]);
+
+    const response = await captureCurrentPage();
+
+    expect(response).toEqual({ ok: true, snapshot });
+    expect(executeScript).toHaveBeenCalledTimes(3);
+    expect(executeScript).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        target: { tabId: activeTab.id },
+        func: expect.any(Function),
+      }),
+    );
   });
 
   it("rejects null and inconsistent nested snapshot fields without throwing", () => {
@@ -199,22 +303,24 @@ describe("captureCurrentPage", () => {
     expect(getTab).toHaveBeenCalledTimes(2);
     expect(query).not.toHaveBeenCalled();
     expect(executeScript).toHaveBeenCalledWith(
-      expect.objectContaining({ target: { tabId: preferredTab.id } }),
+      expect.objectContaining({
+        target: { tabId: preferredTab.id },
+        files: ["assets/mature-extractor.js"],
+      }),
     );
   });
 
-  it("reports a closed preferred tab without capturing another tab", async () => {
+  it("falls back to the live active tab when the preferred tab was closed", async () => {
     setCaptureTarget(42);
     getTab.mockRejectedValue(new Error("No tab with id: 42"));
+    query.mockResolvedValue([activeTab]);
+    executeScript.mockResolvedValue([{ result: snapshot }]);
 
     const response = await captureCurrentPage();
 
-    expect(response).toMatchObject({
-      ok: false,
-      error: { code: "STALE_TAB" },
-    });
-    expect(query).not.toHaveBeenCalled();
-    expect(executeScript).not.toHaveBeenCalled();
+    expect(response).toEqual({ ok: true, snapshot });
+    expect(query).toHaveBeenCalledWith({ active: true, lastFocusedWindow: true });
+    expect(executeScript).toHaveBeenCalled();
   });
 
   it("handles capture messages and ignores unrelated messages", async () => {

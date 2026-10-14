@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import threading
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from app.core.config import Settings
 from app.notes.errors import NoteServiceError
-from app.notes.markdown import build_new_document, merge_document, unified_diff
+from app.notes.markdown import (
+    _validate_managed_document,
+    build_new_document,
+    merge_document,
+    unified_diff,
+)
 from app.notes.proposals import NoteProposal, ProposalStore
 from app.notes.resolver import NoteIdentity, NoteResolver
 from app.notes.vault import VaultGuard
@@ -34,7 +40,74 @@ class MarkdownNoteService:
         return [block for block in request.snapshot.blocks if block.id in selected]
 
     def _identity(self, request: NotePreviewRequest) -> NoteIdentity:
-        return self.resolver.resolve(request.snapshot.url)
+        identity = self.resolver.resolve(
+            request.snapshot.url,
+            request.snapshot.title,
+        )
+        return self._select_existing_identity(identity)
+
+    def _select_existing_identity(self, identity: NoteIdentity) -> NoteIdentity:
+        _, preferred, _ = self.vault.read_text(identity.target_relative_path)
+        if preferred is not None and self.resolver.content_matches_identity(
+            preferred, identity
+        ):
+            return identity
+
+        _, legacy, _ = self.vault.read_text(identity.legacy_target_relative_path)
+        if legacy is not None and self.resolver.content_matches_identity(
+            legacy, identity
+        ):
+            return replace(
+                identity,
+                target_relative_path=identity.legacy_target_relative_path,
+            )
+
+        root = self.vault.root()
+        preferred_path = self.vault.target_path(identity.target_relative_path)
+        if preferred_path.parent.exists():
+            for path in preferred_path.parent.glob("*.md"):
+                relative = path.relative_to(root).as_posix()
+                _, content, _ = self.vault.read_text(relative)
+                if content and self.resolver.content_matches_identity(
+                    content, identity
+                ):
+                    return replace(identity, target_relative_path=relative)
+
+        if preferred is not None:
+            return replace(
+                identity,
+                target_relative_path=self.resolver.collision_target(identity),
+            )
+        return identity
+
+    def resolve_existing_identity(self, identity: NoteIdentity) -> NoteIdentity:
+        """Resolve the existing managed note without reading or writing content."""
+
+        return self._select_existing_identity(identity)
+
+    def replace_managed_note(
+        self,
+        *,
+        identity: NoteIdentity,
+        relative_path: str,
+        expected_revision: str,
+        content: str,
+    ) -> str:
+        """Replace a validated managed note with revision and path fencing."""
+
+        lock = self._lock_for(relative_path)
+        with lock:
+            _, current, revision = self.vault.read_text(relative_path)
+            if revision != expected_revision:
+                raise NoteServiceError(
+                    "note_conflict",
+                    "预览后目标笔记已被修改，请重新生成计划。",
+                    409,
+                )
+            if current is None:
+                raise NoteServiceError("note_conflict", "目标笔记已不存在。", 409)
+            _validate_managed_document(current, identity)
+            return self.vault.replace(relative_path, content)
 
     def preview(self, request: NotePreviewRequest) -> tuple[NoteProposal, NoteIdentity]:
         identity = self._identity(request)

@@ -222,3 +222,28 @@ class VaultGuard:
             ) from exc
         finally:
             self._cleanup_temporary(temporary_path)
+
+    def write_asset(self, relative_path: str, content: str) -> str:
+        """Atomically publish a generated text asset such as a sanitized SVG."""
+
+        if not relative_path.lower().endswith(".svg"):
+            raise NoteServiceError(
+                "unsafe_asset_path",
+                "生成资源只允许写入 SVG 文件。",
+                422,
+            )
+        path = self.target_path(relative_path, create_parent=True)
+        temporary_path: str | None = None
+        try:
+            temporary_path = self._write_temporary(path.parent, content)
+            os.replace(temporary_path, path)
+            temporary_path = None
+            return hashlib.sha256(content.encode("utf-8")).hexdigest()
+        except OSError as exc:
+            raise NoteServiceError(
+                "vault_write_failed",
+                "无法安全写入生成资源。",
+                500,
+            ) from exc
+        finally:
+            self._cleanup_temporary(temporary_path)

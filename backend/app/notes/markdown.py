@@ -111,6 +111,12 @@ def render_block(block: ContentBlock) -> str:
         body = f"{fence}{language}\n{text}\n{fence}"
     elif block.type == "list":
         body = f"- {text}"
+    elif block.type == "image" and block.image:
+        alt = _escape_control_markers(block.image.alt or block.text).replace("]", r"\]")
+        body = f"![{alt}](<{block.image.src}>)"
+        if block.image.title:
+            title = block.image.title.replace('"', r'\"')
+            body = f"![{alt}](<{block.image.src}> \"{title}\")"
     else:
         body = text
     return f"{marker}\n{body}"
@@ -172,6 +178,7 @@ def build_new_document(
 ) -> str:
     rendered_blocks = "\n\n".join(render_block(block) for block in blocks)
     note = _render_personal_note(personal_note) if personal_note else ""
+    display_title = snapshot.contentTitle or snapshot.title
     frontmatter = "\n".join(
         [
             "---",
@@ -186,7 +193,7 @@ def build_new_document(
         ]
     )
     return (
-        f"{frontmatter}\n\n# {_escape_control_markers(snapshot.title)}\n\n"
+        f"{frontmatter}\n\n# {_escape_control_markers(display_title)}\n\n"
         f"## 来源\n\n- URL: {_quote(identity.normalized_url)}\n\n"
         f"## LearnFlow 受控摘录\n\n{CONTROLLED_BEGIN}\n"
         f"{rendered_blocks}\n{CONTROLLED_END}\n\n"

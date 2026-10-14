@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "url": "https://fastapi.tiangolo.com/zh/tutorial/body/",
+  "title": "请求体¶",
+  "capturedAt": "2026-10-12T00:00:00Z",
+  "blocks": [
+    {"id": "title", "type": "heading", "text": "请求体¶", "level": 1},
+    {"id": "intro", "type": "paragraph", "text": "当需要从客户端发送数据到 API 时，可以使用请求体。"},
+    {"id": "base-model", "type": "heading", "text": "导入 Pydantic 的 BaseModel¶", "level": 2},
+    {"id": "base-model-text", "type": "paragraph", "text": "首先导入 BaseModel，并用它声明数据模型。"},
+    {"id": "create-model", "type": "heading", "text": "创建数据模型¶", "level": 2},
+    {"id": "create-model-code", "type": "code", "text": "from pydantic import BaseModel\n\nclass Item(BaseModel):\n    name: str\n    price: float", "language": "python"},
+    {"id": "declare-parameter", "type": "heading", "text": "声明为参数¶", "level": 2},
+    {"id": "declare-parameter-text", "type": "paragraph", "text": "将模型类型声明为路径操作函数的参数。"},
+    {"id": "result", "type": "heading", "text": "结果¶", "level": 2},
+    {"id": "result-code", "type": "code", "text": "{\n  \"name\": \"Foo\",\n  \"price\": 42.0\n}", "language": "json"},
+    {"id": "tips", "type": "list", "text": "请求体会被自动校验"},
+    {"id": "tips-2", "type": "list", "text": "代码示例保持原有缩进"}
+  ],
+  "extraction": {
+    "strategy": "article",
+    "truncated": false,
+    "warnings": []
+  },
+  "stats": {
+    "characterCount": 254,
+    "codeBlockCount": 2,
+    "blockCount": 12
+  }
+}

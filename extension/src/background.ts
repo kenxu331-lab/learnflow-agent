@@ -6,6 +6,8 @@ import {
   commitNote,
   ingestPageSnapshot,
   previewNote,
+  previewDocument,
+  commitDocument,
   recommendAi,
 } from "./backend/api-client";
 import { ensureTrustedStorageAccess } from "./backend/storage";
@@ -15,6 +17,8 @@ import {
   isNoteCommitRequest,
   isNotePreviewRequest,
   isAiRecommendRequest,
+  isDocumentPreviewRequest,
+  isDocumentCommitRequest,
   type BackendClientFailure,
 } from "./backend/types";
 
@@ -80,6 +84,20 @@ export function registerBackendMessageHandler(): void {
 
     if (isNoteCommitRequest(message)) {
       void commitNote(message.proposalId)
+        .then(sendResponse)
+        .catch(() => sendResponse(backendUnknownError()));
+      return true;
+    }
+
+    if (isDocumentPreviewRequest(message)) {
+      void previewDocument(message.snapshot)
+        .then(sendResponse)
+        .catch(() => sendResponse(backendUnknownError()));
+      return true;
+    }
+
+    if (isDocumentCommitRequest(message)) {
+      void commitDocument(message.proposalId)
         .then(sendResponse)
         .catch(() => sendResponse(backendUnknownError()));
       return true;

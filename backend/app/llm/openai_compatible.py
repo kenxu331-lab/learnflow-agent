@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 from openai import (
     APIConnectionError,
     APIStatusError,
@@ -151,3 +153,105 @@ class OpenAICompatibleProvider:
             finish_reason=choice.finish_reason,
             usage=usage,
         )
+
+    async def stream_chat(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        max_output_tokens: int,
+    ) -> AsyncIterator[str]:
+        """Stream a normal DeepSeek/OpenAI-compatible chat completion."""
+
+        if self.settings.llm_provider != "openai_compatible":
+            raise LLMProviderError(
+                "llm_not_configured",
+                "当前 LLM Provider 配置不受支持。",
+                503,
+            )
+        if not self.settings.llm_api_key:
+            raise LLMProviderError(
+                "llm_not_configured",
+                "未配置 LLM API Key，请在后端环境中配置。",
+                503,
+            )
+
+        client: AsyncOpenAI | None = None
+        try:
+            try:
+                client = AsyncOpenAI(
+                    api_key=self.settings.llm_api_key,
+                    base_url=self.settings.llm_base_url,
+                    timeout=self.settings.llm_timeout_seconds,
+                    max_retries=0,
+                )
+            except (TypeError, ValueError) as error:
+                raise LLMProviderError(
+                    "llm_invalid_config",
+                    "LLM Provider 配置无效，请检查 Base URL 和超时设置。",
+                    503,
+                ) from error
+
+            response = await client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                stream=True,
+                extra_body={"thinking": {"type": "disabled"}},
+                max_tokens=max_output_tokens,
+            )
+            async for chunk in response:
+                if not chunk.choices:
+                    continue
+                content = chunk.choices[0].delta.content
+                if isinstance(content, str) and content:
+                    yield content
+        except LLMProviderError:
+            raise
+        except (AuthenticationError, PermissionDeniedError) as error:
+            raise LLMProviderError(
+                "llm_auth_failed",
+                "LLM API 鉴权失败，请检查后端 API Key。",
+                502,
+            ) from error
+        except RateLimitError as error:
+            raise LLMProviderError(
+                "llm_rate_limited",
+                "LLM 服务当前受到限流，请稍后重试。",
+                429,
+            ) from error
+        except APITimeoutError as error:
+            raise LLMProviderError(
+                "llm_timeout",
+                "LLM 服务请求超时，请稍后重试。",
+                504,
+            ) from error
+        except APIConnectionError as error:
+            raise LLMProviderError(
+                "llm_unavailable",
+                "无法连接 LLM 服务，请检查网络或服务地址。",
+                503,
+            ) from error
+        except APIStatusError as error:
+            status_code = getattr(error, "status_code", None)
+            if isinstance(status_code, int) and status_code == 429:
+                raise LLMProviderError(
+                    "llm_rate_limited",
+                    "LLM 服务当前受到限流，请稍后重试。",
+                    429,
+                ) from error
+            raise LLMProviderError(
+                "llm_upstream_error",
+                "LLM 服务暂时不可用，请稍后重试。",
+                502,
+            ) from error
+        except Exception as error:
+            raise LLMProviderError(
+                "llm_upstream_error",
+                "LLM 服务处理失败，请稍后重试。",
+                502,
+            ) from error
+        finally:
+            if client is not None:
+                try:
+                    await client.close()
+                except Exception:
+                    pass
