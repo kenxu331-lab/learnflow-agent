@@ -17,7 +17,6 @@ import {
   STUDY_MANUAL_SNAPSHOT_REQUEST,
   STUDY_PAUSE_REQUEST,
   STUDY_REVOKE_REQUEST,
-  STUDY_SITE_HOST_PERMISSION,
   STUDY_SITE_ORIGIN,
   STUDY_STATE_CHANGED,
   isStudyRequest,
@@ -32,6 +31,8 @@ import {
 
 const RETRY_DELAYS_MS = [350, 900];
 const MAX_SAVED_CHAPTERS = 20;
+const SHADOW_MERMAID_HOOK_ID = "learnflow-shadow-mermaid-hook";
+const SHADOW_MERMAID_HOOK_SCRIPT = "assets/shadow-mermaid-hook.js";
 
 let studyState = createDefaultStudyState();
 let stateReady: Promise<void> | undefined;
@@ -51,14 +52,75 @@ function getTabUrl(tab: chrome.tabs.Tab): string | undefined {
   return tab.url ?? tab.pendingUrl;
 }
 
-export function isSupportedStudyUrl(value: string | undefined): boolean {
+async function registerShadowMermaidHook(tabId?: number): Promise<void> {
+  const canRegister =
+    typeof chrome.scripting?.registerContentScripts === "function";
+  if (!canRegister) return;
+  const script: chrome.scripting.RegisteredContentScript = {
+    id: SHADOW_MERMAID_HOOK_ID,
+    matches: ["https://fastapi.tiangolo.com/*"],
+    js: [SHADOW_MERMAID_HOOK_SCRIPT],
+    runAt: "document_start",
+    world: "MAIN",
+    persistAcrossSessions: true,
+  };
+  try {
+    await chrome.scripting.registerContentScripts([script]);
+  } catch {
+    try {
+      await chrome.scripting.updateContentScripts([script]);
+    } catch {
+      // The page can still be captured when it exposes open Mermaid DOM.
+    }
+  }
+  if (tabId === undefined || typeof chrome.scripting?.executeScript !== "function") {
+    return;
+  }
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: [SHADOW_MERMAID_HOOK_SCRIPT],
+      world: "MAIN",
+    });
+  } catch {
+    // Injection may be unavailable on a restricted or transitioning page.
+  }
+}
+
+async function unregisterShadowMermaidHook(): Promise<void> {
+  if (typeof chrome.scripting?.unregisterContentScripts !== "function") return;
+  try {
+    await chrome.scripting.unregisterContentScripts({
+      ids: [SHADOW_MERMAID_HOOK_ID],
+    });
+  } catch {
+    // Revocation remains successful even when no registered script exists.
+  }
+}
+
+export async function ensureShadowMermaidHook(): Promise<void> {
+  try {
+    const granted = await chrome.permissions.contains({
+      origins: ["https://fastapi.tiangolo.com/*"],
+    });
+    if (granted) await registerShadowMermaidHook();
+  } catch {
+    // Permission may not be granted yet; enabling study mode retries later.
+  }
+}
+
+export function isSupportedStudyUrl(
+  value: string | undefined,
+  authorizedOrigin = studyState.authorizedOrigin,
+): boolean {
   if (!value) {
     return false;
   }
 
   try {
     const url = new URL(value);
-    return url.origin === STUDY_SITE_ORIGIN && url.protocol === "https:";
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    return !authorizedOrigin || url.origin === authorizedOrigin;
   } catch {
     return false;
   }
@@ -96,6 +158,7 @@ export function computeSnapshotHash(snapshot: PageSnapshot): string {
   const canonical = [
     normalizeChapterUrl(snapshot.url),
     snapshot.title,
+    snapshot.contentTitle ?? "",
     ...snapshot.blocks.map((block) =>
       [block.type, block.level ?? "", block.language ?? "", block.text].join(
         "\u0000",
@@ -149,34 +212,70 @@ async function persistState(
 }
 
 async function getTargetTab(): Promise<chrome.tabs.Tab | undefined> {
-  const targetId = getCaptureTarget() ?? studyState.activeTabId;
-  if (Number.isInteger(targetId)) {
+  const preferredTargetId = getCaptureTarget() ?? studyState.activeTabId;
+  if (Number.isInteger(preferredTargetId)) {
     try {
-      return await chrome.tabs.get(targetId as number);
+      const preferredTab = await chrome.tabs.get(preferredTargetId as number);
+      // A side panel can outlive the tab that opened it. If Chrome tells us
+      // the preferred tab is no longer active, use the real active tab below
+      // instead of leaking the old capture target into the next request.
+      if (preferredTab.active !== false) {
+        return preferredTab;
+      }
     } catch {
-      return undefined;
+      // Fall through to the active-tab lookup. The target may have been
+      // closed while the side panel was still open.
     }
   }
 
   try {
     const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    return tabs[0];
+    const activeTab = tabs[0];
+    if (Number.isInteger(activeTab?.id)) {
+      setCaptureTarget(activeTab.id as number);
+    }
+    return activeTab;
   } catch {
     return undefined;
   }
 }
 
-async function hasSitePermission(): Promise<boolean> {
-  if (typeof chrome.permissions?.contains !== "function") {
-    return false;
-  }
+function originOf(value: string | undefined): string | undefined {
+  if (!value) return undefined;
   try {
-    return await chrome.permissions.contains({
-      origins: [STUDY_SITE_HOST_PERMISSION],
-    });
+    return new URL(value).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+async function hasSitePermission(origin: string | undefined): Promise<boolean> {
+  if (!origin) return false;
+  if (typeof chrome.permissions?.contains === "function") {
+    try {
+      const parsed = new URL(origin);
+      if (
+        await chrome.permissions.contains({ origins: [`${parsed.origin}/*`] })
+      ) {
+        return true;
+      }
+    } catch {
+      // Fall through to the activeTab authorization check.
+    }
+  }
+  if (origin === STUDY_SITE_ORIGIN) return false;
+  const targetId = getCaptureTarget() ?? studyState.activeTabId;
+  if (!Number.isInteger(targetId)) return false;
+  try {
+    const tab = await chrome.tabs.get(targetId as number);
+    return originOf(getTabUrl(tab)) === origin;
   } catch {
     return false;
   }
+}
+
+function isOriginAuthorized(origin: string | undefined): boolean {
+  return Boolean(origin && studyState.authorizedOrigins?.includes(origin));
 }
 
 export async function getStudyTabContext(): Promise<StudyTabContext> {
@@ -186,8 +285,11 @@ export async function getStudyTabContext(): Promise<StudyTabContext> {
   return {
     tabId: typeof tab?.id === "number" ? tab.id : null,
     url,
-    supported: isSupportedStudyUrl(url ?? undefined),
-    hasPermission: await hasSitePermission(),
+    // Context describes the page itself. Authorization is reported
+    // separately so an authorized A tab does not make an unauthorized B tab
+    // look like an unsupported page.
+    supported: isSupportedStudyUrl(url ?? undefined, undefined),
+    hasPermission: await hasSitePermission(originOf(url ?? undefined)),
   };
 }
 
@@ -238,6 +340,43 @@ function trimSavedChapters(): void {
   }
 }
 
+async function restoreCachedChapterForTab(
+  tabId: number,
+  url: string,
+): Promise<boolean> {
+  const chapterId = deriveChapterId(url);
+  const snapshot = studyState.snapshotsByChapter[chapterId];
+  const previous = studyState.sessionsByChapter[chapterId];
+  // Hash-fragment navigation may represent a different in-page section. A
+  // cache hit is safe only when it belongs to the exact browser URL; the
+  // normalized chapter key still groups the stored history for retention.
+  if (!snapshot || !previous || snapshot.url !== url) return false;
+  const now = new Date().toISOString();
+  const session: StudySession = {
+    ...previous,
+    tabId,
+    sourceUrl: snapshot.url,
+    pageTitle: snapshot.title,
+    status: "SOURCE_READY",
+    updatedAt: now,
+    lastError: undefined,
+  };
+  studyState = {
+    ...studyState,
+    enabled: true,
+    status: "SOURCE_READY",
+    activeOrigin: originOf(url),
+    authorizedOrigin: originOf(url),
+    activeTabId: tabId,
+    currentSession: session,
+    currentSnapshot: snapshot,
+    sessionsByChapter: { ...studyState.sessionsByChapter, [chapterId]: session },
+    lastError: undefined,
+  };
+  await persistState({ persistSnapshots: false });
+  return true;
+}
+
 async function recordSnapshot(tabId: number, snapshot: PageSnapshot): Promise<void> {
   const chapterId = deriveChapterId(snapshot.url);
   const snapshotHash = computeSnapshotHash(snapshot);
@@ -263,6 +402,7 @@ async function recordSnapshot(tabId: number, snapshot: PageSnapshot): Promise<vo
       studyState.lastError !== undefined;
     studyState = {
       ...studyState,
+      activeOrigin: originOf(snapshot.url),
       activeTabId: tabId,
       status: "SOURCE_READY",
       lastError: undefined,
@@ -294,6 +434,7 @@ async function recordSnapshot(tabId: number, snapshot: PageSnapshot): Promise<vo
 
   studyState = {
     ...studyState,
+    activeOrigin: originOf(snapshot.url),
     activeTabId: tabId,
     status: "SOURCE_READY",
     lastError: undefined,
@@ -324,6 +465,7 @@ async function prepareForNavigationCapture(
 
   studyState = {
     ...studyState,
+    activeOrigin: originOf(url),
     activeTabId: tabId,
     status: "CAPTURING",
     currentSession: undefined,
@@ -352,6 +494,58 @@ async function markCaptureFailure(message: string): Promise<void> {
       : undefined,
   };
   await persistState();
+}
+
+/**
+ * Remove only the live tab pointer. Site authorization and chapter caches are
+ * durable resources and must survive a tab/origin switch.
+ */
+async function deactivateCurrentTab(
+  tabId: number,
+  activeOrigin: string | undefined,
+  message: string,
+): Promise<void> {
+  nextGeneration(tabId);
+  studyState = {
+    ...studyState,
+    enabled: studyState.enabled,
+    status: "DISABLED",
+    activeOrigin,
+    activeTabId: tabId,
+    currentSession: undefined,
+    currentSnapshot: undefined,
+    lastError: message,
+  };
+  await persistState({ persistSnapshots: false });
+}
+
+async function disableStudyAfterPermissionLoss(
+  tabId: number,
+  activeOrigin: string | undefined,
+  message: string,
+): Promise<void> {
+  nextGeneration(tabId);
+  const remainingOrigins = activeOrigin
+    ? (studyState.authorizedOrigins ?? []).filter(
+        (origin) => origin !== activeOrigin,
+      )
+    : studyState.authorizedOrigins;
+  studyState = {
+    ...studyState,
+    enabled: false,
+    status: "DISABLED",
+    activeOrigin,
+    authorizedOrigin:
+      studyState.authorizedOrigin === activeOrigin
+        ? undefined
+        : studyState.authorizedOrigin,
+    authorizedOrigins: remainingOrigins,
+    activeTabId: tabId,
+    currentSession: undefined,
+    currentSnapshot: undefined,
+    lastError: message,
+  };
+  await persistState({ persistSnapshots: false });
 }
 
 async function runAutomaticCapture(
@@ -386,18 +580,45 @@ async function runAutomaticCapture(
   }
 
   const url = getTabUrl(tab);
-  if (!isSupportedStudyUrl(url)) {
-    await prepareForNavigationCapture(tabId, undefined);
-    await markCaptureFailure("当前页面不在已授权的 FastAPI 教程站点内。");
+  const origin = originOf(url);
+  if (!isSupportedStudyUrl(url, undefined)) {
+    await deactivateCurrentTab(
+      tabId,
+      origin,
+      "当前网站尚未授权，请点击按钮授权后开始学习。",
+    );
     return;
   }
-  if (!(await hasSitePermission())) {
-    if (!isCurrentGeneration(tabId, generation) || !studyState.enabled) {
-      return;
-    }
-    await prepareForNavigationCapture(tabId, undefined);
-    await markCaptureFailure("站点访问权限已撤销，自动学习未读取当前页面。");
+  if (!isOriginAuthorized(origin)) {
+    await deactivateCurrentTab(
+      tabId,
+      origin,
+      "当前网站尚未授权，请点击按钮开始学习。",
+    );
     return;
+  }
+  if (origin !== studyState.authorizedOrigin || studyState.activeOrigin !== origin) {
+    studyState = {
+      ...studyState,
+      authorizedOrigin: origin,
+      activeOrigin: origin,
+      activeTabId: tabId,
+      status: "AUTHORIZED",
+      lastError: undefined,
+    };
+    await persistState({ persistSnapshots: false });
+  }
+  if (!(await hasSitePermission(originOf(url)))) {
+    await disableStudyAfterPermissionLoss(
+      tabId,
+      origin,
+      "当前网站访问权限已失效，请重新授权后开始学习。",
+    );
+    return;
+  }
+
+  if (originOf(url) === STUDY_SITE_ORIGIN) {
+    await registerShadowMermaidHook(tabId);
   }
 
   if (
@@ -417,7 +638,7 @@ async function runAutomaticCapture(
   const verifiedUrl = getTabUrl(verifiedTab);
   if (
     verifiedUrl !== url ||
-    !isSupportedStudyUrl(verifiedUrl) ||
+    !isSupportedStudyUrl(verifiedUrl, undefined) ||
     !isCurrentGeneration(tabId, generation) ||
     !studyState.enabled ||
     studyState.activeTabId !== tabId
@@ -425,6 +646,10 @@ async function runAutomaticCapture(
     if (isCurrentGeneration(tabId, generation) && studyState.enabled) {
       scheduleCapture(tabId, 0);
     }
+    return;
+  }
+
+  if (verifiedUrl && (await restoreCachedChapterForTab(tabId, verifiedUrl))) {
     return;
   }
 
@@ -449,7 +674,7 @@ async function runAutomaticCapture(
       ) {
         return false;
       }
-      if (!(await hasSitePermission())) {
+      if (!(await hasSitePermission(originOf(verifiedUrl)))) {
         return false;
       }
       try {
@@ -500,17 +725,22 @@ async function enableStudyMode(): Promise<StudyActionResult> {
   if (!url) {
     return failure("URL_UNAVAILABLE", "无法获取当前标签页 URL，请重新打开侧边栏。");
   }
-  if (!isSupportedStudyUrl(url)) {
+  if (!isSupportedStudyUrl(url, undefined)) {
     return failure(
       "UNSUPPORTED_SITE",
-      "当前版本只支持 fastapi.tiangolo.com 教程站点。",
+      "当前页面不是 HTTP/HTTPS 教程页面。",
     );
   }
-  if (!(await hasSitePermission())) {
+  const origin = originOf(url);
+  if (!(await hasSitePermission(origin))) {
     return failure(
       "PERMISSION_REQUIRED",
       "请先允许 LearnFlow 访问当前教程站点。",
     );
+  }
+
+  if (origin === STUDY_SITE_ORIGIN) {
+    await registerShadowMermaidHook(tab.id as number);
   }
 
   const tabId = tab.id as number;
@@ -519,11 +749,18 @@ async function enableStudyMode(): Promise<StudyActionResult> {
     ...studyState,
     enabled: true,
     status: "AUTHORIZED",
-    authorizedOrigin: STUDY_SITE_ORIGIN,
+    activeOrigin: origin,
+    authorizedOrigin: origin,
+    authorizedOrigins: Array.from(
+      new Set([...(studyState.authorizedOrigins ?? []), ...(origin ? [origin] : [])]),
+    ),
     activeTabId: tabId,
     lastError: undefined,
   };
   await persistState();
+  if (await restoreCachedChapterForTab(tabId, url)) {
+    return { ok: true, value: studyState };
+  }
   scheduleCapture(tabId, 50);
   return { ok: true, value: studyState };
 }
@@ -548,15 +785,29 @@ async function pauseStudyMode(): Promise<StudyActionResult> {
 }
 
 async function revokeStudyMode(): Promise<StudyActionResult> {
+  const authorizedOrigins = studyState.authorizedOrigins ?? [];
   const result = await pauseStudyMode();
   if (!result.ok) {
     return result;
   }
+  const wasFastApi =
+    studyState.authorizedOrigin === STUDY_SITE_ORIGIN ||
+    authorizedOrigins.includes(STUDY_SITE_ORIGIN);
   studyState = {
     ...studyState,
+    activeOrigin: undefined,
     authorizedOrigin: undefined,
+    authorizedOrigins: [],
     activeTabId: undefined,
   };
+  if (typeof chrome.permissions?.remove === "function") {
+    await chrome.permissions.remove({
+      origins: authorizedOrigins.map((origin) => `${origin}/*`),
+    });
+  }
+  if (wasFastApi) {
+    await unregisterShadowMermaidHook();
+  }
   setCaptureTarget(undefined);
   await persistState();
   return { ok: true, value: studyState };
@@ -567,14 +818,40 @@ async function handleNavigationEvent(url: string, tabId: number): Promise<void> 
   if (!studyState.enabled || !Number.isInteger(tabId) || tabId !== studyState.activeTabId) {
     return;
   }
-  if (!isSupportedStudyUrl(url)) {
-    await prepareForNavigationCapture(tabId, undefined);
-    await markCaptureFailure("当前页面已离开已授权的 FastAPI 教程站点。");
+  const origin = originOf(url);
+  if (!isSupportedStudyUrl(url, undefined)) {
+    await deactivateCurrentTab(
+      tabId,
+      origin,
+      "当前网站尚未授权，请点击按钮授权后开始学习。",
+    );
     return;
   }
-  if (!(await hasSitePermission())) {
-    await prepareForNavigationCapture(tabId, undefined);
-    await markCaptureFailure("站点访问权限已撤销，自动学习未读取当前页面。");
+  if (!isOriginAuthorized(origin)) {
+    await deactivateCurrentTab(
+      tabId,
+      origin,
+      "当前网站尚未授权，请点击按钮开始学习。",
+    );
+    return;
+  }
+  if (origin !== studyState.authorizedOrigin || studyState.activeOrigin !== origin) {
+    studyState = {
+      ...studyState,
+      authorizedOrigin: origin,
+      activeOrigin: origin,
+      activeTabId: tabId,
+      status: "AUTHORIZED",
+      lastError: undefined,
+    };
+    await persistState({ persistSnapshots: false });
+  }
+  if (!(await hasSitePermission(originOf(url)))) {
+    await disableStudyAfterPermissionLoss(
+      tabId,
+      origin,
+      "当前网站访问权限已失效，请重新授权后开始学习。",
+    );
     return;
   }
 
@@ -597,6 +874,10 @@ async function handleNavigationEvent(url: string, tabId: number): Promise<void> 
     return;
   }
 
+  if (await restoreCachedChapterForTab(tabId, url)) {
+    return;
+  }
+
   await prepareForNavigationCapture(tabId, url);
   if (studyState.enabled && studyState.activeTabId === tabId) {
     scheduleCapture(tabId);
@@ -614,11 +895,11 @@ async function handleTabUpdated(
   }
 
   const url = getTabUrl(tab);
-  if (changeInfo.url && !isSupportedStudyUrl(changeInfo.url)) {
+  if (changeInfo.url && !isSupportedStudyUrl(changeInfo.url, undefined)) {
     await handleNavigationEvent(changeInfo.url, tabId);
     return;
   }
-  if (url && isSupportedStudyUrl(url)) {
+  if (url && isSupportedStudyUrl(url, undefined)) {
     if (changeInfo.status === "complete" || changeInfo.url) {
       await handleNavigationEvent(url, tabId);
     }
@@ -627,9 +908,10 @@ async function handleTabUpdated(
 
 async function handleTabActivated(tabId: number): Promise<void> {
   await ensureStateReady();
-  if (!studyState.enabled) {
-    return;
-  }
+  // Keep the side panel's target tab current even while study mode is paused.
+  // Otherwise returning from an unauthorized tab can query the stale tab and
+  // report that the current URL is unavailable.
+  setCaptureTarget(tabId);
 
   let tab: chrome.tabs.Tab;
   try {
@@ -638,15 +920,82 @@ async function handleTabActivated(tabId: number): Promise<void> {
     return;
   }
   const url = getTabUrl(tab);
-  setCaptureTarget(tabId);
-  if (!isSupportedStudyUrl(url) || !(await hasSitePermission())) {
-    await prepareForNavigationCapture(tabId, undefined);
-    await markCaptureFailure("当前标签页未授权，自动学习已暂停本页采集。");
+  const origin = originOf(url);
+
+  if (!studyState.enabled) {
+    // Recover the state written by older builds: switching to an unauthorized
+    // tab used to clear enabled/authorizedOrigin while leaving the durable
+    // authorizedOrigins and chapter cache behind.
+    const canRecoverLegacyStudy =
+      !studyState.authorizedOrigin &&
+      !studyState.currentSession &&
+      !studyState.currentSnapshot &&
+      isSupportedStudyUrl(url, undefined) &&
+      isOriginAuthorized(origin) &&
+      (await hasSitePermission(origin));
+    if (canRecoverLegacyStudy) {
+      studyState = {
+        ...studyState,
+        enabled: true,
+        status: "AUTHORIZED",
+        activeOrigin: origin,
+        authorizedOrigin: origin,
+        activeTabId: tabId,
+        lastError: undefined,
+      };
+      await persistState({ persistSnapshots: false });
+      await handleNavigationEvent(url as string, tabId);
+      return;
+    }
+
+    // Even while paused, the side panel must not keep displaying the previous
+    // tab's chapter. Do not resume capture here; explicit pause remains a
+    // user-level decision.
+    if (
+      studyState.activeTabId !== tabId ||
+      studyState.activeOrigin !== origin
+    ) {
+      studyState = {
+        ...studyState,
+        activeTabId: tabId,
+        activeOrigin: origin,
+        currentSession: undefined,
+        currentSnapshot: undefined,
+        lastError: undefined,
+      };
+      await persistState({ persistSnapshots: false });
+    }
+    return;
+  }
+  if (!isSupportedStudyUrl(url, undefined)) {
+    await deactivateCurrentTab(
+      tabId,
+      origin,
+      "当前网站尚未授权，请点击按钮授权后开始学习。",
+    );
+    return;
+  }
+  if (!isOriginAuthorized(origin)) {
+    await deactivateCurrentTab(
+      tabId,
+      origin,
+      "已切换到其他教程网站，请重新授权当前网站。",
+    );
+    return;
+  }
+  if (!(await hasSitePermission(origin))) {
+    await disableStudyAfterPermissionLoss(
+      tabId,
+      origin,
+      "当前网站访问权限已失效，请重新授权后开始学习。",
+    );
     return;
   }
 
   studyState = {
     ...studyState,
+    activeOrigin: origin,
+    authorizedOrigin: origin,
     activeTabId: tabId,
     status: "AUTHORIZED",
     lastError: undefined,
@@ -673,10 +1022,15 @@ async function recordManualSnapshot(snapshot: PageSnapshot): Promise<void> {
   }
 
   const tabId = studyState.activeTabId;
-  if (tabId === undefined || !isSupportedStudyUrl(snapshot.url)) {
+  const snapshotOrigin = originOf(snapshot.url);
+  if (
+    tabId === undefined ||
+    !isSupportedStudyUrl(snapshot.url, undefined) ||
+    !isOriginAuthorized(snapshotOrigin)
+  ) {
     return;
   }
-  if (!(await hasSitePermission())) {
+  if (!(await hasSitePermission(snapshotOrigin))) {
     return;
   }
 
@@ -731,9 +1085,13 @@ export function registerStudyService(): void {
     return;
   }
   registered = true;
+  void ensureShadowMermaidHook();
 
   void ensureStateReady().then(() => {
     if (studyState.enabled && studyState.activeTabId !== undefined) {
+      if (studyState.authorizedOrigin === STUDY_SITE_ORIGIN) {
+        void registerShadowMermaidHook();
+      }
       scheduleCapture(studyState.activeTabId, 100);
     }
   });

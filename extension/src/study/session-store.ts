@@ -14,6 +14,7 @@ export function createDefaultStudyState(): StudyState {
     status: "DISABLED",
     sessionsByChapter: {},
     snapshotsByChapter: {},
+    authorizedOrigins: [],
   };
 }
 
@@ -67,10 +68,22 @@ export function parseStudyState(
     status: isStudyStatus(candidate.status) ? candidate.status : "DISABLED",
     sessionsByChapter: {},
     snapshotsByChapter: {},
+    authorizedOrigins: [],
   };
 
+  if (typeof candidate.activeOrigin === "string") {
+    state.activeOrigin = candidate.activeOrigin;
+  }
   if (typeof candidate.authorizedOrigin === "string") {
     state.authorizedOrigin = candidate.authorizedOrigin;
+  }
+  const origins = candidate.authorizedOrigins;
+  if (Array.isArray(origins)) {
+    state.authorizedOrigins = origins.filter(
+      (origin): origin is string => typeof origin === "string",
+    );
+  } else if (state.authorizedOrigin) {
+    state.authorizedOrigins = [state.authorizedOrigin];
   }
   if (
     typeof candidate.activeTabId === "number" &&
@@ -121,6 +134,13 @@ export function parseStudyState(
   if (!state.currentSnapshot && state.currentSession) {
     state.currentSnapshot =
       state.snapshotsByChapter[state.currentSession.chapterId];
+  }
+  if (!state.activeOrigin && state.currentSession) {
+    try {
+      state.activeOrigin = new URL(state.currentSession.sourceUrl).origin;
+    } catch {
+      // Keep malformed legacy state isolated; capture will re-establish it.
+    }
   }
   if (typeof candidate.lastError === "string") {
     state.lastError = candidate.lastError;

@@ -2,9 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   commitNote,
+  commitDocument,
   ingestPageSnapshot,
   previewNote,
+  previewDocument,
   recommendAi,
+  getStudyConversation,
+  getKnowledgeJobs,
+  getKnowledgeStatus,
+  setKnowledgeExtractionConsent,
+  streamStudyChat,
 } from "../src/backend/api-client";
 import type { PageSnapshot } from "../src/capture/types";
 
@@ -215,6 +222,92 @@ describe("backend HTTP client", () => {
     );
   });
 
+  it("constructs a read-only Document Engine V2 preview request", async () => {
+    const response = {
+      status: "preview",
+      schemaVersion: 2,
+      proposalId: "document-proposal-1",
+      action: "create",
+      noteId: "learnflow-1",
+      targetRelativePath: "LearnFlow/example.com/tutorial--hash.md",
+      diff: "+# Tutorial\n",
+      expectedRevision: null,
+      expiresAt: "2026-10-12T20:00:00Z",
+      title: "Tutorial",
+      sourceUrl: snapshot.url,
+      markdownPreview: "# Tutorial\n",
+      diagnostics: {
+        renderedBlockCount: 1,
+        filteredBlockCount: 0,
+        unsupportedBlockCount: 0,
+        truncated: false,
+        warnings: [],
+        qualityStatus: "ok",
+        issues: [],
+      },
+    } as const;
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(response), { status: 200 }),
+    );
+
+    const result = await previewDocument(snapshot);
+
+    expect(result).toEqual({ ok: true, response });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/documents/preview",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ snapshot }),
+      }),
+    );
+  });
+
+  it("commits a Document Engine V2 proposal by ID", async () => {
+    const response = {
+      status: "created",
+      noteId: "learnflow-1",
+      targetRelativePath: "LearnFlow/example.com/tutorial--hash.md",
+      revision: "sha256:revision",
+    } as const;
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(response), { status: 200 }),
+    );
+
+    const result = await commitDocument("document-proposal-1");
+
+    expect(result).toEqual({ ok: true, response });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/documents/commit",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ proposalId: "document-proposal-1" }),
+      }),
+    );
+  });
+
+  it("rejects a malformed Document Engine V2 response", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: "preview",
+          schemaVersion: 2,
+          title: "Tutorial",
+          sourceUrl: snapshot.url,
+          markdownPreview: "# Tutorial\n",
+          diagnostics: null,
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const result = await previewDocument(snapshot);
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "INVALID_RESPONSE" },
+    });
+  });
+
   it("maps AI timeout and invalid response errors", async () => {
     fetchMock.mockRejectedValue(new DOMException("aborted", "AbortError"));
     const timeoutResult = await recommendAi({ snapshot, learningGoal: "" });
@@ -298,5 +391,178 @@ describe("backend HTTP client", () => {
     const result = await ingestPageSnapshot(snapshot);
 
     expect(result).toMatchObject({ ok: false, error: { code: "TIMEOUT" } });
+  });
+
+  it("parses Study Chat SSE deltas and the persisted completion", async () => {
+    const assistantMessage = {
+      schemaVersion: 1,
+      messageId: "message-1",
+      role: "assistant",
+      content: "答案",
+      selectedText: null,
+      source: {
+        sourceUrl: snapshot.url,
+        headingPath: [],
+        sourceNodeId: null,
+        sourceFingerprint: null,
+      },
+      origin: "ai",
+      createdAt: "2026-10-13T00:00:00Z",
+    } as const;
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode('event: delta\ndata: {"text":"答"}\n\n'),
+        );
+        controller.enqueue(
+          new TextEncoder().encode(
+            `event: done\ndata: ${JSON.stringify({
+              schemaVersion: 1,
+              conversationId: "conversation-1",
+              message: assistantMessage,
+            })}\n\n`,
+          ),
+        );
+        controller.close();
+      },
+    });
+    fetchMock.mockResolvedValue(
+      new Response(stream, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      }),
+    );
+
+    const deltas: string[] = [];
+    const result = await streamStudyChat(
+      {
+        schemaVersion: 1,
+        conversationId: "conversation-1",
+        sessionId: "session-1",
+        sourceUrl: snapshot.url,
+        pageTitle: snapshot.title,
+        headingPath: ["Tutorial"],
+        question: "解释",
+        cloudConsent: true,
+        snapshot,
+      },
+      (delta) => deltas.push(delta),
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      response: {
+        schemaVersion: 1,
+        conversationId: "conversation-1",
+        message: assistantMessage,
+      },
+    });
+    expect(deltas).toEqual(["答"]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/study/chat",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ Accept: "text/event-stream" }),
+      }),
+    );
+  });
+
+  it("restores a chapter conversation through the local API", async () => {
+    const responseBody = {
+      schemaVersion: 1,
+      conversationId: "conversation-1",
+      sessionId: "session-1",
+      sourceUrl: snapshot.url,
+      pageTitle: snapshot.title,
+      messages: [],
+    } as const;
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(responseBody), { status: 200 }),
+    );
+
+    const result = await getStudyConversation("conversation-1");
+
+    expect(result).toEqual({ ok: true, response: responseBody });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/study/conversations/conversation-1",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer local-token" },
+      }),
+    );
+  });
+
+  it("reads independent knowledge extraction status", async () => {
+    const response = {
+      consent: {
+        scopeId: "scope-1",
+        state: "revoked",
+        policyVersion: null,
+      },
+      queuedJobCount: 2,
+      runningJobCount: 1,
+    } as const;
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(response), { status: 200 }),
+    );
+
+    const result = await getKnowledgeStatus();
+
+    expect(result).toEqual({ ok: true, response });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/knowledge/status",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer local-token" },
+      }),
+    );
+  });
+
+  it("updates independent knowledge extraction consent", async () => {
+    const response = {
+      scopeId: "scope-1",
+      state: "active",
+      policyVersion: "s2-a-v1",
+    } as const;
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(response), { status: 200 }),
+    );
+
+    const result = await setKnowledgeExtractionConsent(true);
+
+    expect(result).toEqual({ ok: true, response });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/knowledge/consent",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ enabled: true, policyVersion: "s2-a-v1" }),
+      }),
+    );
+  });
+
+  it("reads knowledge extraction job outcomes", async () => {
+    const response = [
+      {
+        jobId: "job-1",
+        chapterId: "chapter-1",
+        conversationId: "conversation-1",
+        state: "needs_review",
+        attemptCount: 0,
+        lastErrorCode: "knowledge_invalid_output",
+        lastErrorMessage: "知识提炼模型返回结构无效。",
+        updatedAt: "2026-10-14T06:07:42.254399Z",
+      },
+    ] as const;
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(response), { status: 200 }),
+    );
+
+    const result = await getKnowledgeJobs();
+
+    expect(result).toEqual({ ok: true, response });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/knowledge/jobs",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer local-token" },
+      }),
+    );
   });
 });

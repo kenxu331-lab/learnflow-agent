@@ -24,6 +24,15 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 60.0
     llm_max_output_tokens: int = 2048
     llm_max_context_characters: int = 48_000
+    learning_memory_db_path: str = "data/learning_memory.sqlite3"
+    study_chat_max_history_messages: int = 20
+    knowledge_profile_id: str = "local-default"
+    knowledge_extraction_max_input_tokens: int = 8_000
+    knowledge_extraction_max_output_tokens: int = 3_000
+    knowledge_extraction_idle_seconds: int = 10
+    knowledge_worker_poll_seconds: float = 15.0
+    knowledge_network_retry_limit: int = 1
+    knowledge_verifier_max_claims: int = 8
 
     model_config = SettingsConfigDict(
         env_file=".env",

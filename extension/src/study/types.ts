@@ -42,8 +42,15 @@ export interface StudyState {
   schemaVersion: 1;
   enabled: boolean;
   status: StudyStatus;
+  /** The origin of the tab currently shown beside the side panel. */
+  activeOrigin?: string;
+  /** The last origin whose study mode was authorized. Kept separate from activeOrigin. */
   authorizedOrigin?: string;
+  /** Persistent site authorization registry; switching tabs must not clear it. */
+  authorizedOrigins?: string[];
+  /** Current browser tab pointer; it is not a chapter/session identity. */
   activeTabId?: number;
+  /** Chapter/session cache, independent from the current tab pointer. */
   sessionsByChapter: Record<string, StudySession>;
   snapshotsByChapter: Record<string, PageSnapshot>;
   currentSession?: StudySession;

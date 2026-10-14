@@ -46,9 +46,11 @@ function makeSnapshot(url = TAB_URL, title = TAB_TITLE): PageSnapshot {
 function createChromeMock(
   initialState: unknown = {},
   initialSnapshots: unknown = {},
+  tabValue: chrome.tabs.Tab = tab,
+  snapshotValue: PageSnapshot = makeSnapshot(),
 ) {
-  const getTab = vi.fn().mockResolvedValue(tab);
-  const executeScript = vi.fn().mockResolvedValue([{ result: makeSnapshot() }]);
+  const getTab = vi.fn().mockResolvedValue(tabValue);
+  const executeScript = vi.fn().mockResolvedValue([{ result: snapshotValue }]);
   const storageSet = vi.fn().mockResolvedValue(undefined);
   const storageGet = vi.fn().mockResolvedValue({
     [STUDY_STORAGE_KEY]: initialState,
@@ -58,7 +60,7 @@ function createChromeMock(
   const chromeMock = {
     tabs: {
       get: getTab,
-      query: vi.fn().mockResolvedValue([tab]),
+      query: vi.fn().mockResolvedValue([tabValue]),
       onUpdated: { addListener: vi.fn() },
       onActivated: { addListener: vi.fn() },
       onRemoved: { addListener: vi.fn() },
@@ -94,6 +96,11 @@ function historyListener(chromeMock: ReturnType<typeof createChromeMock>["chrome
     .calls[0][0] as (details: { tabId: number; url: string; frameId: number }) => void;
 }
 
+function activatedListener(chromeMock: ReturnType<typeof createChromeMock>["chromeMock"]) {
+  return chromeMock.tabs.onActivated.addListener.mock
+    .calls[0][0] as (details: { tabId: number }) => void;
+}
+
 async function captureInitialPage(
   service: Awaited<ReturnType<typeof loadService>>["service"],
 ): Promise<void> {
@@ -126,6 +133,92 @@ describe("M01-04B study session service", () => {
     expect(executeScript).not.toHaveBeenCalled();
   });
 
+  it("supports a user-authorized non-FastAPI HTTPS tutorial via activeTab", async () => {
+    const genericUrl = "https://docs.example.com/guide/";
+    const genericTab = { ...tab, url: genericUrl } as chrome.tabs.Tab;
+    const genericSnapshot = makeSnapshot(genericUrl, "Example guide");
+    const { executeScript, chromeMock } = createChromeMock(
+      {},
+      {},
+      genericTab,
+      genericSnapshot,
+    );
+    chromeMock.permissions.contains.mockResolvedValue(false);
+    const { service } = await loadService();
+
+    const response = await service.handleStudyRequest({ type: STUDY_ENABLE_REQUEST });
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(response).toMatchObject({ ok: true, value: { authorizedOrigin: "https://docs.example.com" } });
+    expect(executeScript).toHaveBeenCalledTimes(1);
+    expect(service.getCurrentStudyState().currentSnapshot?.url).toBe(genericUrl);
+  });
+
+  it("keeps site authorization while clearing only the live state on an unauthorized origin", async () => {
+    const { chromeMock, getTab } = createChromeMock();
+    const { service: loadedService } = await loadService();
+    await captureInitialPage(loadedService);
+
+    const nextUrl = "https://docs.example.com/guide/";
+    getTab.mockResolvedValue({ ...tab, url: nextUrl, title: "Guide" });
+    const onHistory = historyListener(chromeMock);
+    onHistory({ tabId: 7, url: nextUrl, frameId: 0 });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(loadedService.getCurrentStudyState()).toMatchObject({
+      enabled: true,
+      status: "DISABLED",
+      authorizedOrigin: "https://fastapi.tiangolo.com",
+      activeOrigin: "https://docs.example.com",
+    });
+    expect(loadedService.getCurrentStudyState().currentSnapshot).toBeUndefined();
+  });
+
+  it("restores A's cached chapter after switching to B and back without recapturing", async () => {
+    const { executeScript, getTab, chromeMock } = createChromeMock();
+    const { service } = await loadService();
+    await captureInitialPage(service);
+    const initialCaptureCount = executeScript.mock.calls.length;
+
+    const onActivated = activatedListener(chromeMock);
+    getTab.mockResolvedValue({
+      id: 8,
+      windowId: 1,
+      url: "https://docs.example.com/guide/",
+      title: "Guide",
+    } as chrome.tabs.Tab);
+    onActivated({ tabId: 8 });
+    await vi.waitFor(() => {
+      expect(service.getCurrentStudyState().activeTabId).toBe(8);
+    });
+
+    expect(service.getCurrentStudyState()).toMatchObject({
+      enabled: true,
+      status: "DISABLED",
+      activeTabId: 8,
+      activeOrigin: "https://docs.example.com",
+      authorizedOrigin: "https://fastapi.tiangolo.com",
+    });
+    expect(service.getCurrentStudyState().currentSnapshot).toBeUndefined();
+    expect(executeScript).toHaveBeenCalledTimes(initialCaptureCount);
+
+    getTab.mockResolvedValue(tab);
+    onActivated({ tabId: 7 });
+    await vi.waitFor(() => {
+      expect(service.getCurrentStudyState().status).toBe("SOURCE_READY");
+    });
+
+    expect(service.getCurrentStudyState()).toMatchObject({
+      status: "SOURCE_READY",
+      activeTabId: 7,
+      activeOrigin: "https://fastapi.tiangolo.com",
+      authorizedOrigin: "https://fastapi.tiangolo.com",
+    });
+    expect(service.getCurrentStudyState().currentSnapshot?.url).toBe(TAB_URL);
+    expect(executeScript).toHaveBeenCalledTimes(initialCaptureCount);
+  });
+
   it("does not resume automatic injection after a persisted permission is revoked", async () => {
     const persistedState: StudyState = {
       schemaVersion: 1,
@@ -143,7 +236,11 @@ describe("M01-04B study session service", () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(executeScript).not.toHaveBeenCalled();
-    expect(service.getCurrentStudyState().status).toBe("CAPTURE_FAILED");
+    expect(service.getCurrentStudyState()).toMatchObject({
+      enabled: false,
+      status: "DISABLED",
+      authorizedOrigin: undefined,
+    });
   });
 
   it("captures an authorized page and persists a recoverable chapter session", async () => {

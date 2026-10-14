@@ -2,7 +2,7 @@
 
 LearnFlow Agent 是一个本地优先的 AI 学习助手。它将理解学习上下文、调用工具、维护学习记忆，并把学习成果沉淀到 Obsidian。
 
-本仓库当前完成 M01-04A 单页采集、页面快照安全传输、AI 重点推荐，以及用户确认后的 Markdown 笔记保存。本开发分支增加 M01-04C-00 的 Chat-first 学习工作台；自动采集与可恢复学习会话来自已合并的 M01-04B。暂不包含数据库、向量库、OCR、Agent Loop 或 AI 结构化笔记生成。
+本仓库当前完成 M01-04A 单页采集、页面快照安全传输、AI 重点推荐，以及用户确认后的 Markdown 笔记保存。本开发分支增加 M01-04C-01a 的零 Token Document Engine V2，同时保留 M01-04C-00 的 Chat-first 学习工作台；自动采集与可恢复学习会话来自已合并的 M01-04B。暂不包含数据库、向量库、OCR、Agent Loop 或 AI 结构化笔记生成。
 
 ## 技术栈
 
@@ -26,6 +26,7 @@ LearnFlow Agent 是一个本地优先的 AI 学习助手。它将理解学习上
 │   ├── app/notes/             # Vault 安全、Markdown、提案和保存服务
 │   ├── app/llm/               # LLM Provider 抽象与 DeepSeek 兼容实现
 │   ├── app/ai_notes/           # Context、Prompt 和推荐业务校验
+│   ├── app/document_engine/    # PageSnapshot → Document AST → Markdown V2
 │   ├── app/schemas/page_snapshot.py
 │   ├── app/schemas/notes.py
 │   ├── .env.example
@@ -119,9 +120,9 @@ npm run build
 
 用户点击扩展工具栏图标时，Manifest V3 background service worker 通过 `chrome.action.onClicked` 显式调用 `chrome.sidePanel.open({ tabId })`；这个用户手势用于建立 `activeTab` 临时访问上下文。随后侧边栏的“采集当前页面”按钮发送请求，service worker 查询并校验目标标签页，在 HTTP/HTTPS 页面中通过 `chrome.scripting.executeScript` 执行自包含 DOM extractor，返回标题、URL、章节、段落、代码块和列表组成的 `PageSnapshot`。结果只在侧边栏展示，不请求 FastAPI、不写数据库、不调用 LLM，也不修改网页内容。
 
-采集使用 `sidePanel`、`activeTab`、`scripting` 和 `webNavigation` 权限，不申请 `<all_urls>` 或宽泛 Host Permissions。当前支持普通 HTTP/HTTPS 教程、文档和 README 页面；`chrome://`、扩展页、开发者工具页、无正文页面和注入权限不足的页面会返回明确错误。M01-01 的采集器仍是 M01-04B 的唯一正文提取入口。M01-04B 在用户授权后由 Background Service Worker 自动调度该采集器，使用顶层 `webNavigation` 历史/fragment 事件支持普通导航、前进后退和常见 SPA 路由变化；自动采集只保存在本地学习状态中，不上传 DeepSeek、不写入 Obsidian。手动采集入口继续保留。
+采集使用 `sidePanel`、`activeTab`、`scripting` 和 `webNavigation` 权限，不申请 `<all_urls>` 或宽泛 Host Permissions。当前支持普通 HTTP/HTTPS 教程、文档和 README 页面；`chrome://`、扩展页、开发者工具页、无正文页面和注入权限不足的页面会返回明确错误。M01-04B 的采集服务优先执行 Defuddle，失败时回退 Mozilla Readability 和既有确定性 DOM Extractor。M01-04B 在用户授权后由 Background Service Worker 自动调度该采集服务，使用顶层 `webNavigation` 历史/fragment 事件支持普通导航、前进后退和常见 SPA 路由变化；自动采集只保存在本地学习状态中，不上传 DeepSeek、不写入 Obsidian。手动采集入口继续保留。
 
-M01-04B 当前声明 `webNavigation` 和精确的可选 Host Permission `https://fastapi.tiangolo.com/*`；用户点击“在此网站启用学习模式”时才申请站点访问。`webNavigation` 只提供导航元数据（Tab、顶层 frame、URL），不读取正文；后台仍严格检查已授权站点、当前 Tab 和学习模式状态。站点授权和云端 AI 授权分开，未授权站点不会自动注入采集脚本。页面中的图片、媒体和表格会在 `PageSnapshot.extraction.warnings` 中标记为未覆盖，不会宣称整页无损采集。
+M01-04B 对 FastAPI 保留精确的可选 Host Permission `https://fastapi.tiangolo.com/*`；其他 HTTP/HTTPS 教程站点使用用户点击扩展工具栏图标后获得的 `activeTab` 临时访问权。用户点击“在此网站启用学习模式”后，LearnFlow 只绑定当前网页来源；跨站导航不会继续自动读取，必须在新站点重新点击扩展图标。没有申请 `<all_urls>`。站点授权和云端 AI 授权分开，未授权站点不会自动注入采集脚本。成熟 DOM 解析器会保留可识别的图片远程引用、表格、链接和代码结构；图片资源暂不下载到 Vault，并在 diagnostics 中明确标记。
 
 ## 当前范围
 
@@ -136,7 +137,7 @@ M01-02 的本地服务配置：在 `backend/.env` 设置 `LEARNFLOW_LOCAL_API_TO
 - `POST /api/v1/notes/preview`：服务端重新校验快照和选择，从 URL 派生稳定 note ID、目标相对路径和完整 Markdown 预览；预览不会创建目录或文件。
 - `POST /api/v1/notes/commit`：只接受不透明 `proposalId`，用户明确确认后才写入；返回 `created`、`updated` 或 `unchanged`。
 - Markdown 使用 YAML frontmatter、受控摘录区和个人笔记区。摘录按页面块原始顺序保存，代码缩进与围栏保留，受控标记和用户文本会做转义。页面采集同时生成稳定摘录键：包含块类型、文本/语言指纹和同类块出现序号；展示用的 `block-N` 仅用于本次勾选交互。
-- 来源 URL 经规范化后计算 SHA-256：`chapterId=chapter-<hash 前 32 位>`、`noteId=learnflow-<hash 前 32 位>`，路径为 `LearnFlow/<safe-host>/<safe-slug>--<hash 前 20 位>.md`。页面标题变化不会改变路径。
+- 来源 URL 经规范化后计算 SHA-256：`chapterId=chapter-<hash 前 32 位>`、`noteId=learnflow-<hash 前 32 位>`。新文件优先使用网页标题命名为 `LearnFlow/<safe-host>/<title>.md`；同目录同名文件属于其他来源时才追加 `<hash 前 20 位>`。已有 `slug--hash.md` 文件会被识别并继续更新，不自动重命名或删除。
 - 后端只访问 Vault 下的 `LearnFlow/` 受控目录，拒绝非 LearnFlow 文件、损坏标记、符号链接/Windows 重解析点和路径穿越。追加只修改受控区域，保留个人笔记和其他用户内容。个人笔记使用独立 fingerprint 记录，重复内容精确去重，不使用子字符串判断；旧版无 fingerprint 的笔记也按完整内容兼容判断。
 - 预览提案默认 10 分钟过期，保存在单个后端进程内存中；服务重启、多 worker 或多实例不会保留提案。预览后文件被外部修改时返回 409，要求重新预览。
 
@@ -153,3 +154,17 @@ M01-04B 手工验收：执行 `npm.cmd run build` 后，在 `chrome://extensions
 ### M01-04C-00 对话式学习工作台
 
 Side Panel 采用 Chat-first 布局：顶部显示真实 StudyState 和 PageSnapshot 上下文，主区域预留学习对话，底部输入区明确标记对话能力尚未接入，不会伪造 AI 回复。笔记入口“整理原文笔记”复用现有 Note Preview/Commit，并默认包含当前快照的全部有效内容块；AI 注解入口仅展示未就绪状态，不调用旧版重点推荐 API 冒充注解。旧版手动采集、AI 推荐、Token 和技术诊断仍保留在“高级工具”折叠区。
+
+### M01-04C-01a Document Engine V2
+
+Document Engine V2 是独立于旧版 Note Service 的确定性只读预览链路：
+
+```text
+PageSnapshot v1 → SourceNormalizer → DocumentAST → MarkdownRendererV2
+```
+
+后端新增 `POST /api/v1/documents/preview` 和 `POST /api/v1/documents/commit`。预览只接受经过 PageSnapshot 校验的 JSON，使用本地 Bearer Token 鉴权，返回新版 Markdown、proposalId 和覆盖诊断；提交只接受 proposalId，并使用现有 VaultGuard、版本检查和安全发布机制保存预览中的同一份 Markdown。两条接口都不调用 DeepSeek，AST 单独保存标题层级、段落、代码、列表和源块映射，Markdown 输出不包含 `LF_BLOCK`、fingerprint 或旧版受控区域标记。
+
+Side Panel 现在只有一个主流程“整理并保存当前章节”：使用当前真实 StudyState/PageSnapshot 生成新版预览，并由确认按钮保存完全相同的 Markdown。章节切换会使旧的新版预览和 proposal 失效。旧版 Note Preview/Commit 后端保留兼容已有调用和旧文件，但旧版入口不再显示在主界面。
+
+当前 PageSnapshot v1 可以表达标题、段落、代码、列表、表格、Callout、行内链接和远程图片引用；图片二进制资源、复杂嵌套列表和跨页面资源下载仍作为覆盖限制保留在诊断中。仓库中的 FastAPI body fixture 是基于目标 URL 和已知内容构造的回归样例，不是从当前 Chrome 会话导出的真实快照，真实浏览器质量仍需 M01-04C-01d 人工补验。
