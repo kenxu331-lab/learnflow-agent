@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1080" viewBox="0 0 1440 1080" role="img" aria-labelledby="title desc">
+  <title id="title">LearnFlow Agent 系统架构</title>
+  <desc id="desc">Chrome 扩展采集授权章节与选区，经本地 FastAPI 接入有界 Agent、异步知识提炼和证据核验。模型通过共享 Provider 调用；归档必须经用户确认、版本校验和写入服务。SQLite 保存状态，Obsidian Markdown 保存知识。独立文档引擎支持无需模型的章节转换。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto-start-reverse"><path d="M0 0 9 4.5 0 9Z" fill="#64748b"/></marker>
+    <marker id="greenArrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 9 4.5 0 9Z" fill="#16846e"/></marker>
+    <style>
+      text { font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif; fill: #25324b; }
+      .title { font-size: 30px; font-weight: 700; }
+      .subtitle { font-size: 16px; fill: #64748b; }
+      .label { font-size: 19px; font-weight: 650; }
+      .body { font-size: 17px; }
+      .small { font-size: 15px; fill: #64748b; }
+      .eyebrow { font-size: 13px; font-weight: 700; letter-spacing: 1px; fill: #5867b2; }
+      .flow { fill: none; stroke: #64748b; stroke-width: 2; marker-end: url(#arrow); }
+      .state { fill: none; stroke: #8290a6; stroke-width: 2; stroke-dasharray: 6 5; }
+    </style>
+  </defs>
+  <rect width="1440" height="1080" rx="20" fill="#f6f8fc"/>
+  <text x="40" y="48" class="title">LearnFlow Agent</text>
+  <text x="40" y="77" class="subtitle">在阅读现场理解 → 核验 → 沉淀知识 · 当前 M1 / M2 实现架构</text>
+  <rect x="1133" y="29" width="267" height="37" rx="18" fill="#e8eefb"/>
+  <text x="1266" y="53" text-anchor="middle" font-size="15" fill="#475a98">本地优先 · 写入前由用户确认</text>
+
+  <!-- Browser trust boundary -->
+  <rect x="32" y="106" width="1376" height="170" rx="18" fill="#eef2ff" stroke="#d6def3"/>
+  <text x="56" y="138" class="eyebrow">01 / CHROME EXTENSION · MANIFEST V3</text>
+  <rect x="56" y="158" width="410" height="94" rx="12" fill="#fff" stroke="#d6def3"/>
+  <text x="76" y="190" class="label">授权页面与当前选区</text>
+  <text x="76" y="220" class="body">正文 / 代码 → PageSnapshot + 来源锚点</text>
+  <path d="M466 205H518" class="flow"/>
+  <rect x="524" y="158" width="518" height="94" rx="12" fill="#fff" stroke="#d6def3"/>
+  <text x="544" y="190" class="label">Side Panel / 独立宽屏工作台</text>
+  <text x="544" y="220" class="body">共享会话 · SSE 消息 / 工具事件 · 确认卡片</text>
+  <text x="1070" y="186" class="body">站点授权 ≠ 云端发送同意</text>
+  <text x="1070" y="218" class="small">网页与选区仅作为不可信参考数据</text>
+  <path d="M690 276V330" class="flow"/>
+  <text x="710" y="308" class="small">本地 HTTP + Token / SSE 返回</text>
+
+  <!-- Local application boundary -->
+  <rect x="32" y="336" width="1036" height="428" rx="18" fill="#fff" stroke="#dce2ec"/>
+  <text x="56" y="367" class="eyebrow">02 / LOCAL FASTAPI · PYTHON + PYDANTIC</text>
+  <rect x="56" y="385" width="988" height="57" rx="10" fill="#f1f5fa"/>
+  <text x="76" y="409" class="label">StudyChatService / 业务 API / 共享 LLM Provider</text>
+  <text x="76" y="431" class="small">Token、Host / Origin 校验 · 章节 / 会话范围 · 流式输出与消息恢复</text>
+  <path d="M206 442V474M534 442V474M878 442V474" class="flow"/>
+
+  <rect x="56" y="480" width="300" height="250" rx="13" fill="#f2f3ff" stroke="#dcdff5"/>
+  <text x="76" y="511" class="label">有界业务 Agent</text>
+  <text x="76" y="546" class="body">模型决策 → 工具 → 结果反馈</text>
+  <text x="76" y="577" class="body">读取章节 / 查询已有知识</text>
+  <text x="76" y="608" class="body">提交提炼 / 查结果 / 归档预览</text>
+  <text x="76" y="647" class="small">工具白名单 + 参数校验</text>
+  <text x="76" y="672" class="small">步数 / 超时 / 上下文预算</text>
+  <text x="76" y="704" class="small">不开放 Shell 或任意文件执行</text>
+  <path d="M356 577H378" class="flow"/>
+
+  <rect x="384" y="480" width="300" height="250" rx="13" fill="#eff8ff" stroke="#cfe4f3"/>
+  <text x="404" y="511" class="label">知识任务与证据核验</text>
+  <text x="404" y="546" class="body">学习事件 → Knowledge Draft</text>
+  <text x="404" y="577" class="body">原子 Claim + Evidence Registry</text>
+  <text x="404" y="608" class="body">独立核验 → PublishCandidate</text>
+  <text x="404" y="647" class="small">高水位 / 批次指纹 / 租约 / 重试</text>
+  <text x="404" y="672" class="small">任务恢复 · 精确去重与相似提示</text>
+  <text x="404" y="704" class="small">核验未通过 ≠ 可归档</text>
+  <path d="M684 577H706" class="flow"/>
+
+  <rect x="712" y="480" width="332" height="250" rx="13" fill="#edf8f3" stroke="#c8e8db"/>
+  <text x="732" y="511" class="label">持久化确认与安全写入</text>
+  <text x="732" y="546" class="body">真实合并 Diff → 用户点击确认</text>
+  <text x="732" y="577" class="body">知识 / 来源 / Vault / 文件版本复核</text>
+  <text x="732" y="608" class="body">AnnotationWriteService → 回执</text>
+  <text x="732" y="647" class="small">审批摘要 · 跨进程锁 · 原子替换</text>
+  <text x="732" y="672" class="small">幂等与中断恢复 · 冲突转人工审查</text>
+  <text x="732" y="704" class="small">模型无 confirm / commit 工具</text>
+
+  <!-- Remote model calls are shared by chat, extraction and verification. -->
+  <rect x="1100" y="336" width="308" height="295" rx="18" fill="#fff7ec" stroke="#ead8b9"/>
+  <text x="1122" y="369" class="eyebrow">03 / MODEL PROVIDER</text>
+  <text x="1122" y="404" class="label">OpenAI-compatible API</text>
+  <text x="1122" y="439" class="body">当前示例：DeepSeek</text>
+  <text x="1122" y="480" class="body">流式回答 / Function Calling</text>
+  <text x="1122" y="511" class="body">结构化提炼 / 独立 Claim 核验</text>
+  <text x="1122" y="557" class="small">经共享 Provider 调用</text>
+  <text x="1122" y="582" class="small">不是多个自治 Agent</text>
+  <text x="1122" y="607" class="small">密钥仅配置在后端</text>
+  <path d="M1044 398H1094" class="flow"/>
+  <path d="M1100 424H1050" class="flow" stroke-dasharray="5 4"/>
+  <rect x="1100" y="651" width="308" height="113" rx="13" fill="#fff" stroke="#dce2ec"/>
+  <text x="1122" y="683" class="label">两条不可越过的边界</text>
+  <text x="1122" y="713" class="small">模型生成 ≠ 事实已核验</text>
+  <text x="1122" y="739" class="small">预览 / 关闭弹窗 ≠ 同意写入</text>
+
+  <!-- Durable metadata and one approved file write -->
+  <path d="M206 730V791H534V730M365 791V824" class="state"/>
+  <path d="M878 730V824" fill="none" stroke="#16846e" stroke-width="2.5" marker-end="url(#greenArrow)"/>
+  <text x="420" y="811" class="small">会话、事件、任务与确认状态持久化</text>
+  <text x="899" y="802" font-size="15" fill="#16846e">仅执行已批准的计划</text>
+  <rect x="32" y="830" width="665" height="102" rx="15" fill="#fff" stroke="#dce2ec"/>
+  <text x="56" y="863" class="label">SQLite · 业务状态与元数据</text>
+  <text x="56" y="894" class="body">消息 / 学习事件 / 证据 / 知识版本 / 任务 / 审批 / 写入意图</text>
+  <rect x="725" y="830" width="683" height="102" rx="15" fill="#edf8f3" stroke="#c8e8db"/>
+  <text x="749" y="863" class="label">Obsidian Vault · LearnFlow/ 受控目录</text>
+  <text x="749" y="894" class="body">章节 Markdown 与知识注解 · 路径校验 · 保留用户内容</text>
+
+  <!-- Separate deterministic document conversion path, not an LLM tool. -->
+  <rect x="32" y="957" width="1376" height="69" rx="13" fill="#fff" stroke="#dce2ec"/>
+  <text x="56" y="985" class="label">独立文档链路：PageSnapshot → Document AST → Markdown 预览 → 用户确认保存</text>
+  <text x="56" y="1010" class="small">文档转换不调用 LLM；与知识注解归档分别管理。SQLite 与文件系统之间依靠意图日志 / 哈希恢复，不是单一事务。</text>
+  <text x="40" y="1055" class="small">架构边界：无向量数据库 / 跨站语义 RAG / 多 Agent / 任意代码执行 · 箭头表示主要调用与数据方向，不表示所有请求必经提炼或归档。</text>
+</svg>
