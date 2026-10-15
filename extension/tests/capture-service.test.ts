@@ -72,6 +72,13 @@ describe("captureCurrentPage", () => {
     );
   });
 
+  it("rejects an old chapter body relabeled with the new URL while the browser title has changed", async () => {
+    const next = { ...activeTab, url: "https://example.com/status", title: "Response status" };
+    query.mockResolvedValue([next]);
+    executeScript.mockResolvedValue([{ result: { ...snapshot, url: next.url } }]);
+    expect(await captureCurrentPage()).toMatchObject({ ok: false, error: { code: "STALE_TAB" } });
+  });
+
   it("uses the injected HTTPS URL when tab.url is unavailable", async () => {
     const tabWithoutUrl = { ...activeTab, url: undefined };
     query.mockResolvedValue([tabWithoutUrl]);

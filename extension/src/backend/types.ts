@@ -42,6 +42,9 @@ export interface DocumentCommitRequest {
 }
 
 export interface StudyChatPayload {
+  readonlyAgent?: boolean;
+  knowledgeTools?: boolean;
+  archiveTools?: boolean;
   schemaVersion: 1;
   conversationId: string;
   sessionId: string;
@@ -73,9 +76,13 @@ export interface StudyMessage {
   source?: StudySource | null;
   origin: "user" | "ai";
   createdAt: string;
+  activities?: import("./activity-types").StudyActivityEvent[];
+  knowledge?: import("./knowledge-view").KnowledgeTaskView | null;
+  archiveConfirmations?: import("./archive-types").ArchiveConfirmation[];
 }
 
 export interface StudyConversationResponse {
+  selectedKnowledge?: import("./archive-types").KnowledgeReference[];
   schemaVersion: 1;
   conversationId: string;
   sessionId: string;
@@ -166,6 +173,29 @@ export interface AnnotationCommitResponse {
   status: "published" | "noop" | "needs_review" | "failed";
   intentId?: string | null;
   failureCode?: string | null;
+  plan?: AnnotationPlanResponse;
+}
+
+export interface AnnotationPlanResponse {
+  planId: string;
+  knowledgeId: string;
+  knowledgeVersion: number;
+  targetRelativePath: string;
+  headingPath: string[];
+  conflictStatus: string;
+  conflictReason: string | null;
+  diff: string;
+  plannedEdit: { action: string; anchorLine: number | null; annotation: string } | null;
+}
+
+export interface KnowledgeDraftResponse {
+  knowledgeId: string;
+  version: number;
+  topic: string;
+  body: string;
+  verificationStatus: string;
+  publishStatus: string;
+  claims: { text: string; verificationStatus: string; verificationReason?: string | null }[];
 }
 
 export interface PublishCandidateResponse {

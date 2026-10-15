@@ -219,6 +219,8 @@ yarn-error.log*
 pnpm-debug.log*
 
 # Local configuration and application state
+backend/data/
+backend/.pytest_tmp_s2_stage10/
 *.local
 *.db
 *.sqlite

@@ -1,170 +1,232 @@
 # LearnFlow Agent
 
-LearnFlow Agent 是一个本地优先的 AI 学习助手。它将理解学习上下文、调用工具、维护学习记忆，并把学习成果沉淀到 Obsidian。
+> **把“看懂教程”变成“留下可追溯的知识”。**
+>
+> 一个浏览器侧边栏里的 AI 学习助手：结合正在阅读的章节与选区回答问题，从对话中提炼知识，并在用户确认后保存到 Obsidian。
 
-本仓库当前完成 M01-04A 单页采集、页面快照安全传输、AI 重点推荐，以及用户确认后的 Markdown 笔记保存。本开发分支增加 M01-04C-01a 的零 Token Document Engine V2，同时保留 M01-04C-00 的 Chat-first 学习工作台；自动采集与可恢复学习会话来自已合并的 M01-04B。暂不包含数据库、向量库、OCR、Agent Loop 或 AI 结构化笔记生成。
+**Python · FastAPI · TypeScript · Chrome Extension · SQLite · LLM · Obsidian**
 
-## 技术栈
+[快速开始](#快速开始) · [体验与演示](#体验与演示) · [工程亮点](#工程亮点) · [实现状态](#实现状态与边界) · [源码导航](#源码导航)
 
-- 后端：Python 3.12、uv、FastAPI、Uvicorn、Pydantic、OpenAI-compatible SDK、Ruff
-- 浏览器扩展：TypeScript、Vite、Chrome Manifest V3、Side Panel API、原生 HTML/CSS
-- 计划中的存储：Obsidian Markdown + SQLite
-- 计划中的 Agent：自研 `TOOL_HANDLERS`，不使用 LangChain
+## 为什么做这个项目？
 
-## 目录结构
+学习技术文档时，常见流程是：复制原文到聊天窗口 → 反复补充上下文 → 手动整理回答 → 再复制到笔记。对话结束后，往往分不清哪些是教程事实、哪些是自己的理解、哪些只是 AI 的解释。
+
+LearnFlow 希望把这条链路放回阅读现场：
+
+- **不用反复搬运上下文：** 扩展采集授权页面的正文、代码和当前选区，问答围绕当前章节展开。
+- **不把聊天摘要直接当知识：** 提炼结果关联来源证据，拆成 Claim 后独立核验。
+- **不让模型一句“已保存”代替写入：** 笔记由后端服务执行写入，用户先预览、再确认，界面显示实际结果。
+
+这是一个本地优先的个人开发项目，不是托管 SaaS。使用远程模型时，获用户同意的学习上下文仍会发送给模型服务商；“本地优先”不代表完全离线。
+
+## 体验与演示
+
+以下是可复现的操作脚本，**不是预录的模型回答，也不是对回答质量的保证**。主分支可体验问答、命令式提炼和归档；自然语言工具调用及新工作台属于当前 M2 开发分支，尚未合入主分支，见[实现状态](#实现状态与边界)。
+
+### 1. 阅读时直接问
+
+打开一篇教程，启用学习模式，选中代码后提问：
+
+> 这里为什么使用 Depends？结合当前教程解释，区分原文依据和你的补充说明。
+
+界面流式显示回答，选区与当前章节作为上下文关联保存。目标体验是“围绕正在读的内容交流”，而不是脱离页面的通用聊天。
+
+### 2. 从交流中留下知识
+
+完成几轮有效问答后输入：
 
 ```text
-.
-├── backend/              # 独立 uv Python 项目
-│   ├── app/__init__.py
-│   ├── app/main.py
-│   ├── app/api/health.py
-│   ├── app/api/pages.py
-│   ├── app/core/config.py
-│   ├── app/core/auth.py
-│   ├── app/core/middleware.py
-│   ├── app/notes/             # Vault 安全、Markdown、提案和保存服务
-│   ├── app/llm/               # LLM Provider 抽象与 DeepSeek 兼容实现
-│   ├── app/ai_notes/           # Context、Prompt 和推荐业务校验
-│   ├── app/document_engine/    # PageSnapshot → Document AST → Markdown V2
-│   ├── app/schemas/page_snapshot.py
-│   ├── app/schemas/notes.py
-│   ├── .env.example
-│   ├── tests/test_health.py
-│   ├── tests/test_notes.py
-│   ├── tests/test_pages_ingest.py
-│   ├── pyproject.toml
-│   └── uv.lock
-├── extension/            # 独立 npm/Vite Chrome 扩展项目
-│   ├── public/manifest.json
-│   ├── src/capture/
-│   ├── src/study/        # 站点授权、自动采集调度和本地学习会话
-│   ├── src/backend/
-│   ├── src/background.ts
-│   ├── src/sidepanel/
-│   ├── tests/
-│   ├── sidepanel.html
-│   ├── package.json
-│   └── vite.config.ts
-├── docs/architecture.md  # 当前架构与后续计划
-└── README.md
+/提炼
 ```
 
-## Windows 环境安装
+查看知识候选及核验状态；需要回看时使用 `/查看提炼`。**草稿、核验通过和已归档是不同状态**，证据不足不能被当作已验证知识。
 
-请先安装并确保以下命令位于 `PATH`：
+M2 开发版进一步支持自然语言：“我们刚才讨论了这么久，有哪些知识点值得记住？”Agent 先查询已有成果，再决定是否提交提炼任务。
 
-- Python 3.12
-- uv
-- Node.js 22+（包含 npm）
-- Google Chrome（手工加载扩展时需要）
+### 3. 保存到自己的笔记库
 
-### 后端
+先使用“整理并保存当前章节”生成并确认原文章节笔记，再对已具备归档资格的知识点击归档入口，或使用：
 
-在 PowerShell 中执行：
-
-```powershell
-Set-Location backend
-uv sync
-uv run ruff check .
-uv run pytest
-uv run python -c "import fastapi, pydantic; print(f'FastAPI {fastapi.__version__}; Pydantic {pydantic.__version__}')"
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+```text
+/归档 1
+/归档 all
 ```
 
-服务启动后可访问：
+按当前版本的界面提示完成确认，再到 Obsidian 核对实际文件内容。**提炼或查看候选本身不会写入笔记。**
 
-- 健康检查：`http://127.0.0.1:8000/health`
-- Swagger UI：`http://127.0.0.1:8000/docs`
+M2 开发版将此流程升级为持久化确认卡片：勾选知识 → 查看合并 Markdown Diff → 点击确认 → 检查版本后写入 → 返回真实文件和位置；关闭预览不是确认。
 
-生成本地 Token：
+### 能看到怎样的产物？
+
+正文、标题层级和代码可转为 Obsidian 可读的 Markdown；知识候选保留证据与核验状态，而不是只输出一段聊天总结。
+
+- [Markdown 输出样例](docs/examples/fastapi_body_v2.md)
+- [新旧文档输出对比](docs/examples/document_quality_comparison.md)
+
+以上是**仓库内回归样例的静态输出**，不是当前浏览器实测截图。当前 README 不提供录屏，也不把 HTML 原型当作实际产品截图。
+
+## 工程亮点
+
+### 从页面到知识：保留来源，而不是只保留一段回答
+
+确定性文档引擎将 `PageSnapshot → Document AST → Markdown`，单独处理标题、代码、列表、表格及来源映射；文档转换本身不消耗 LLM Token。学习问答通过 SSE 返回增量消息，SQLite 保存会话与学习事件。
+
+### 提炼和核验分离
+
+知识流水线为：
+
+```text
+学习事件与教程证据
+    → Knowledge Draft
+    → 原子 Claim + Evidence Registry
+    → 独立证据核验
+    → PublishCandidate
+    → 用户确认后由写入服务归档
+```
+
+证据 ID 由应用管理，并校验模型引用是否真实存在。教程事实需要可解析的原文或选区证据；历史 AI 回答不能独立证明事实。核验是独立调用，不代表使用不同模型，也不能保证完全消除幻觉。
+
+### 把可靠性放在业务边界
+
+已有任务调度使用事件高水位、批次指纹、租约和有限重试管理提炼，避免把每次聊天都当成新的完整总结。写入沿用路径约束、版本检查与受控内容更新，不能由模型自由指定任意本地文件。
+
+**M2 开发分支增量：**
+
+- **受控业务 Agent：** 基于原生 Function Calling 和自研处理器，提供读取上下文、查询知识、提炼、查询结果和预览归档 5 类工具；限制步数、超时、参数和上下文预算，不开放 Shell 或任意文件执行。
+- **可恢复任务：** 业务任务和消息卡片持久化，等待由应用恢复，不让模型不断轮询。精确去重与文本相似提示分开，避免误合并不同结论。
+- **Human-in-the-loop：** 归档审批绑定知识版本、Vault、文件哈希和计划摘要；跨进程锁、意图记录和内容校验支持重复确认幂等及中断恢复。模型没有直接确认写入的工具。
+- **Chat-first 工作台：** 独立消息滚动、代码高亮、放大阅读和独立宽屏窗口，复用后端会话与真实任务状态。
+
+不引入 LangChain / LangGraph，模型负责有边界的判断与工具选择，确定性校验、任务调度和文件操作由普通业务代码承担。
+
+## 实现状态与边界
+
+**2026-10-15 核对：当前开发分支为 `codex/m2-archive-confirmation`，包含 M1/M2 功能代码与测试，尚未合入主分支。** 克隆主分支不能直接获得全部 M2 体验；开发分支是否已推送，以 GitHub 实际可见分支为准。
+
+| 能力 | GitHub 主分支 | 当前 M2 开发分支，未合入主分支 |
+| --- | --- | --- |
+| 授权网页采集、结构化 Markdown 预览与保存 | 已有实现 | 补充采集与章节切换修复 |
+| SSE 学习问答、会话持久化 | 已有实现 | 增加工具事件与工作台体验 |
+| 手动提炼、Claim 核验、候选归档 | 已有实现 | 增加自然语言任务与恢复视图 |
+| 有界 Function Calling Agent | 尚未集成 | 已实现，待真实模型联调验收 |
+| V3 侧栏与独立宽屏工作台 | 尚未集成 | 已实现，待浏览器联合验收 |
+| 持久化归档确认、审批摘要和恢复闭环 | 尚未集成 | 已实现并有专项自动化测试 |
+
+当前不包含向量数据库、Embedding 检索、跨站语义 RAG、模型训练、多 Agent 协作或任意代码执行。知识查询主要是章节范围内的关键词过滤；相似提示是文本相似度，不是语义检索。
+
+网页采集受浏览器权限、页面结构和正文可访问性限制，不保证任意网站均可完整采集；图片引用不等于资源已下载。模型效果受实际模型与原文质量影响，暂未发布准确率、延迟、并发或用户规模指标。
+
+## 架构与技术栈
+
+```text
+Chrome Extension：页面/选区 → Side Panel → 本地 API
+                                      ↓
+FastAPI：学习会话 / LLM Provider / 提炼与证据核验
+              ↕                       ↓
+         SQLite 元数据          预览 → 用户确认 → Vault 安全写入
+                                                ↓
+                                         Obsidian Markdown
+```
+
+| 层 | 技术与职责 |
+| --- | --- |
+| 扩展 | TypeScript、Vite、Chrome Manifest V3、Side Panel、原生 HTML/CSS |
+| 文档 | Defuddle / Mozilla Readability / DOM 提取，快照与 AST 规范化 |
+| 后端 | Python 3.12、FastAPI、Pydantic、asyncio |
+| 模型 | OpenAI-compatible SDK；当前配置示例使用 DeepSeek |
+| 存储 | SQLite 保存状态、事件、证据和知识元数据；Markdown 保存笔记 |
+| 质量 | pytest、Vitest、Ruff、TypeScript、ESLint |
+
+## 快速开始
+
+以下以 Windows PowerShell 为例。准备 Python 3.12、uv、Node.js 22+、Chrome，以及一个专用测试 Obsidian Vault。
+
+### 1. 启动后端
 
 ```powershell
+git clone https://github.com/kenxu331-lab/learnflow-agent.git
+Set-Location learnflow-agent/backend
+uv sync --locked
+Copy-Item .env.example .env
 uv run python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-将输出配置为 `backend/.env` 中的 `LEARNFLOW_LOCAL_API_TOKEN=...`。`POST /api/v1/pages/ingest` 使用 `Authorization: Bearer <token>`，未配置或错误 Token 返回 401。
+编辑刚创建的 `backend/.env`，至少填写：
 
-### M01-04A DeepSeek AI 重点推荐
-
-M01-04A 使用后端 OpenAI-compatible Provider 调用 DeepSeek，默认模型为 `deepseek-flash`。API Key 只放在后端 `.env` 或安全环境变量中，不进入 Chrome 扩展、Git、日志或接口响应。配置示例见 `backend/.env.example`。
-
-用户流程为：采集页面 → 明确确认云端发送 → AI 分析 → 查看推荐并逐项取消 → 应用推荐到真实内容块选择 → 继续使用 M01-03 的 Markdown 预览和确认保存。AI 推荐不会自动保存笔记，也不会调用 Vault、文件系统或工具。
-
-新增接口为 `POST /api/v1/ai/notes/recommend`。它通过 Bearer Token、本地 Host/Origin 和 JSON 请求限制保护；测试使用 Fake Provider，不调用真实 DeepSeek。上下文超限会明确返回 `analysis.truncated`，模型输出必须经过 JSON、Pydantic、blockId 来源和业务约束校验。
-
-M01-04A 只推荐教程重点，不生成 AI 结构化 Markdown，不实现 Agent Loop、RAG、SQLite 或 M01-04C Compose。
-
-启用 M01-03 时，还要配置一个已有的 Obsidian 测试 Vault：
-
-```text
-LEARNFLOW_VAULT_PATH=D:\\workspace\\learnflow-test-vault
+```dotenv
+LEARNFLOW_LOCAL_API_TOKEN=填写刚生成的本地令牌
+LEARNFLOW_VAULT_PATH=D:\path\to\your-test-vault
+LEARNFLOW_LLM_BASE_URL=https://api.deepseek.com
+LEARNFLOW_LLM_MODEL=填写服务商当前可用且兼容的模型名称
+LEARNFLOW_LLM_API_KEY=填写你自己的模型密钥
 ```
 
-Windows 测试 Vault 建议先创建一个空目录，再用 Obsidian 打开，由 Obsidian 生成 `.obsidian` 目录。自动化测试只使用 pytest 临时目录，不接触私人 Vault。
+Vault 必须已存在且包含 Obsidian 生成的 `.obsidian` 目录。密钥只配置在后端，不写入扩展或提交 Git；不确定模型名称时以服务商当前文档和账号权限为准。M2 工具调用还要求模型接口支持 Function Calling。
 
-### 浏览器扩展
+```powershell
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+健康检查：[http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)；接口文档：[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)。
+
+### 2. 加载扩展
+
+另开终端，在仓库根目录执行：
 
 ```powershell
 Set-Location extension
 npm ci
-npm run typecheck
-npm run lint
-npm run test
 npm run build
 ```
 
-构建产物位于 `extension/dist/`。在 Chrome 中打开 `chrome://extensions`，启用“开发者模式”，选择“加载已解压的扩展程序”，然后选择 `extension/dist/`。点击扩展图标应打开 LearnFlow Agent 侧边栏，并显示 `Environment Ready`。
+打开 `chrome://extensions` → 开启开发者模式 → 加载已解压的扩展程序 → 选择 `extension/dist`。
 
-### M01-01 页面采集
+在扩展设置中保存与后端一致的本地 Token；打开教程网页，点击扩展图标并按提示授予当前站点学习权限。需要模型处理时单独确认云端发送。首次体验建议使用公开教程和测试 Vault，不使用私人笔记。
 
-用户点击扩展工具栏图标时，Manifest V3 background service worker 通过 `chrome.action.onClicked` 显式调用 `chrome.sidePanel.open({ tabId })`；这个用户手势用于建立 `activeTab` 临时访问上下文。随后侧边栏的“采集当前页面”按钮发送请求，service worker 查询并校验目标标签页，在 HTTP/HTTPS 页面中通过 `chrome.scripting.executeScript` 执行自包含 DOM extractor，返回标题、URL、章节、段落、代码块和列表组成的 `PageSnapshot`。结果只在侧边栏展示，不请求 FastAPI、不写数据库、不调用 LLM，也不修改网页内容。
+### 3. 走一遍完整流程
 
-采集使用 `sidePanel`、`activeTab`、`scripting` 和 `webNavigation` 权限，不申请 `<all_urls>` 或宽泛 Host Permissions。当前支持普通 HTTP/HTTPS 教程、文档和 README 页面；`chrome://`、扩展页、开发者工具页、无正文页面和注入权限不足的页面会返回明确错误。M01-04B 的采集服务优先执行 Defuddle，失败时回退 Mozilla Readability 和既有确定性 DOM Extractor。M01-04B 在用户授权后由 Background Service Worker 自动调度该采集服务，使用顶层 `webNavigation` 历史/fragment 事件支持普通导航、前进后退和常见 SPA 路由变化；自动采集只保存在本地学习状态中，不上传 DeepSeek、不写入 Obsidian。手动采集入口继续保留。
+1. 打开 [FastAPI 依赖项教程](https://fastapi.tiangolo.com/zh/tutorial/dependencies/)，授权并采集。
+2. 整理并保存当前章节，确认 Markdown 中代码和标题正常。
+3. 选中一段代码提问，观察流式回答及章节关联。
+4. 几轮交流后输入 `/提炼`，检查候选及核验结果。
+5. 选择可归档知识、完成确认，到实际 Vault 检查内容。
+6. 切换章节再切回，检查是否恢复对应会话；遇到错误保留真实状态，不把模型文本当作成功凭据。
 
-M01-04B 对 FastAPI 保留精确的可选 Host Permission `https://fastapi.tiangolo.com/*`；其他 HTTP/HTTPS 教程站点使用用户点击扩展工具栏图标后获得的 `activeTab` 临时访问权。用户点击“在此网站启用学习模式”后，LearnFlow 只绑定当前网页来源；跨站导航不会继续自动读取，必须在新站点重新点击扩展图标。没有申请 `<all_urls>`。站点授权和云端 AI 授权分开，未授权站点不会自动注入采集脚本。成熟 DOM 解析器会保留可识别的图片远程引用、表格、链接和代码结构；图片资源暂不下载到 Vault，并在 diagnostics 中明确标记。
+## 验证与安全
 
-## 当前范围
+执行检查：
 
-M00-01 负责可重复的工程骨架、依赖锁定、基础检查和扩展加载入口。M00-02 增加 FastAPI 配置、健康检查和自动化测试。M01-01 增加浏览器当前页面的显式单页采集。M01-02 增加带本地 Token 鉴权的页面快照传输。M01-04B 增加授权站点自动采集和本地学习会话底座；后续阶段再加入 Agent 工具处理器、AI 问答、记忆存储和 AI 注解式 Markdown。
+```powershell
+# backend 目录
+uv sync --locked
+uv run ruff check .
+uv run pytest
 
-M01-02 的本地服务配置：在 `backend/.env` 设置 `LEARNFLOW_LOCAL_API_TOKEN`，扩展中保存同一个 Token 后，用户可主动点击“发送到本地服务”。服务只返回校验状态和统计摘要，不保存正文；网络、401、422、413 和超时错误会在侧边栏显示。
-
-### M01-03 Markdown 笔记闭环
-
-用户先在采集结果中勾选一个或多个内容块，可选填写个人学习笔记，然后依次点击“生成 Markdown 预览”和“确认保存”。扩展只把 `PageSnapshot` 和所选 block ID 发送到固定的本地 API；Background Service Worker 负责 HTTP 请求，网页上下文不会直接访问后端。
-
-- `POST /api/v1/notes/preview`：服务端重新校验快照和选择，从 URL 派生稳定 note ID、目标相对路径和完整 Markdown 预览；预览不会创建目录或文件。
-- `POST /api/v1/notes/commit`：只接受不透明 `proposalId`，用户明确确认后才写入；返回 `created`、`updated` 或 `unchanged`。
-- Markdown 使用 YAML frontmatter、受控摘录区和个人笔记区。摘录按页面块原始顺序保存，代码缩进与围栏保留，受控标记和用户文本会做转义。页面采集同时生成稳定摘录键：包含块类型、文本/语言指纹和同类块出现序号；展示用的 `block-N` 仅用于本次勾选交互。
-- 来源 URL 经规范化后计算 SHA-256：`chapterId=chapter-<hash 前 32 位>`、`noteId=learnflow-<hash 前 32 位>`。新文件优先使用网页标题命名为 `LearnFlow/<safe-host>/<title>.md`；同目录同名文件属于其他来源时才追加 `<hash 前 20 位>`。已有 `slug--hash.md` 文件会被识别并继续更新，不自动重命名或删除。
-- 后端只访问 Vault 下的 `LearnFlow/` 受控目录，拒绝非 LearnFlow 文件、损坏标记、符号链接/Windows 重解析点和路径穿越。追加只修改受控区域，保留个人笔记和其他用户内容。个人笔记使用独立 fingerprint 记录，重复内容精确去重，不使用子字符串判断；旧版无 fingerprint 的笔记也按完整内容兼容判断。
-- 预览提案默认 10 分钟过期，保存在单个后端进程内存中；服务重启、多 worker 或多实例不会保留提案。预览后文件被外部修改时返回 409，要求重新预览。
-
-当前 M01-03 不保存学习会话，不使用 SQLite、LLM 或 Agent Runtime，不自动跟踪网页导航，也不把网页文本当作系统指令执行。文件检查到原子替换之间仍存在跨进程竞态，Obsidian 中手动移动或重命名笔记也不会被自动追踪。
-
-### M01-04B 自动采集与学习会话
-
-学习模式状态由扩展 Background Service Worker 管理，并写入 `chrome.storage.local`，因此 Service Worker 休眠或重启后可以恢复启用状态、当前章节、快照版本指纹和最近错误。当前状态至少包含 `sessionId`、`chapterId`、`sourceUrl`、`pageTitle`、`snapshotHash`、`capturedAt`、`updatedAt` 和 `status`；同一章节的重复 URL/内容不会创建新的会话记录，过期采集结果不能覆盖新章节。
-
-自动采集使用有限防抖与重试，不因每次 DOM 微小变化触发模型请求。M01-04B 不自动调用 AI，现有 M01-04A 的 AI 推荐仍需用户单独勾选云端同意并手动点击分析。当前会话存储是扩展本地的轻量过渡方案，后续可将同一会话/快照接口迁移到后端 SQLite 来源索引；最终 Markdown 仍必须经过 M01-03 Note Service 的 Preview/Commit 和用户确认。
-
-M01-04B 手工验收：执行 `npm.cmd run build` 后，在 `chrome://extensions` 重新加载 `extension/dist`；打开 FastAPI 教程，点击工具栏图标打开侧边栏，再点击“在此网站启用学习模式”并接受精确站点权限。页面初次加载、普通章节导航、浏览器前进/后退及站点 SPA 路由变化应更新“当前学习”状态；重复回到相同内容不应创建新会话。点击“暂停自动学习”后不应再自动读取页面；`chrome://extensions` 或未授权网站不应触发自动采集。自动采集不会自动发送 DeepSeek，也不会自动写入 Obsidian。
-
-### M01-04C-00 对话式学习工作台
-
-Side Panel 采用 Chat-first 布局：顶部显示真实 StudyState 和 PageSnapshot 上下文，主区域预留学习对话，底部输入区明确标记对话能力尚未接入，不会伪造 AI 回复。笔记入口“整理原文笔记”复用现有 Note Preview/Commit，并默认包含当前快照的全部有效内容块；AI 注解入口仅展示未就绪状态，不调用旧版重点推荐 API 冒充注解。旧版手动采集、AI 推荐、Token 和技术诊断仍保留在“高级工具”折叠区。
-
-### M01-04C-01a Document Engine V2
-
-Document Engine V2 是独立于旧版 Note Service 的确定性只读预览链路：
-
-```text
-PageSnapshot v1 → SourceNormalizer → DocumentAST → MarkdownRendererV2
+# extension 目录
+npm ci
+npm run typecheck
+npm run lint
+npm test
+npm run build
 ```
 
-后端新增 `POST /api/v1/documents/preview` 和 `POST /api/v1/documents/commit`。预览只接受经过 PageSnapshot 校验的 JSON，使用本地 Bearer Token 鉴权，返回新版 Markdown、proposalId 和覆盖诊断；提交只接受 proposalId，并使用现有 VaultGuard、版本检查和安全发布机制保存预览中的同一份 Markdown。两条接口都不调用 DeepSeek，AST 单独保存标题层级、段落、代码、列表和源块映射，Markdown 输出不包含 `LF_BLOCK`、fingerprint 或旧版受控区域标记。
+最近一次**本地 M2 开发版本**验证记录（不是主分支 CI 徽章）：扩展 168 项测试通过；后端相关专项曾有 58 项通过记录；提交前重新运行后端全量测试，结果为 168 通过、14 项既有失败。失败涉及旧测试对提炼返回值和无新增状态的预期，尚待单独处理。提交前 Ruff、TypeScript、ESLint 与扩展构建通过。
 
-Side Panel 现在只有一个主流程“整理并保存当前章节”：使用当前真实 StudyState/PageSnapshot 生成新版预览，并由确认按钮保存完全相同的 Markdown。章节切换会使旧的新版预览和 proposal 失效。旧版 Note Preview/Commit 后端保留兼容已有调用和旧文件，但旧版入口不再显示在主界面。
+测试主要使用隔离模型替身与临时 Vault，不能据此宣称真实模型效果或 Chrome 人工联合验收已经全部通过。暂不提供虚构的准确率或性能提升数据。
 
-当前 PageSnapshot v1 可以表达标题、段落、代码、列表、表格、Callout、行内链接和远程图片引用；图片二进制资源、复杂嵌套列表和跨页面资源下载仍作为覆盖限制保留在诊断中。仓库中的 FastAPI body fixture 是基于目标 URL 和已知内容构造的回归样例，不是从当前 Chrome 会话导出的真实快照，真实浏览器质量仍需 M01-04C-01d 人工补验。
+安全设计包括本地服务默认监听 `127.0.0.1`、Bearer Token、Host/Origin 校验、请求体限制，以及 Vault 路径与符号链接/Windows 重解析点检查。网页内容属于不可信数据；站点访问授权与云端模型发送同意分别管理。模型调用可能产生费用。
+
+## 源码导航
+
+- [学习会话与 SSE](backend/app/study_chat/)：章节上下文、流式回答、消息持久化。
+- [知识提炼与核验](backend/app/knowledge/)：任务调度、证据注册、草稿与发布资格。
+- [学习记忆](backend/app/learning_memory/)：SQLite 会话与学习事件。
+- [文档引擎](backend/app/document_engine/)：规范化、AST、Markdown 输出与质量诊断。
+- [笔记安全服务](backend/app/notes/)：Vault 约束、预览与确认保存。
+- [注解规划](backend/app/annotation_planner.py) / [写入服务](backend/app/annotation_writer.py)：来源锚点、计划、版本与文件操作。
+- [扩展采集](extension/src/capture/) / [学习状态](extension/src/study/) / [侧栏](extension/src/sidepanel/)。
+- [后端测试](backend/tests/) / [扩展测试](extension/tests/)。
+- [架构文档](docs/architecture.md)与[S2 设计](docs/LearnFlow_S2_Technical_Design_V1.md)：保留历史设计背景，具体实现以源码及上方状态表为准。
+
+当前开发分支另含 [Agent 工具调用](backend/app/agent/)、[持久化归档确认](backend/app/archive/)、[M1 工作台说明](docs/LearnFlow_V3_M1_UI.md)及[M2 归档交付文档](docs/LearnFlow_V3_M2_Archive_Confirmation.md)。这些路径仅适用于包含对应代码的开发分支。

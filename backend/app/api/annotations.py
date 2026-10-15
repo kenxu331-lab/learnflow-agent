@@ -77,6 +77,14 @@ def update_annotation_consent(
     dependencies=[Depends(require_local_token)],
 )
 def commit_annotation(request: AnnotationCommitRequest) -> AnnotationCommitResponse:
+    if request.planId is not None:
+        _raise(
+            KnowledgeServiceError(
+                "archive_confirmation_required",
+                "临时 planId 不是写入授权，请使用持久化归档确认记录。",
+                409,
+            )
+        )
     try:
         return writer.commit(
             request.knowledgeId,

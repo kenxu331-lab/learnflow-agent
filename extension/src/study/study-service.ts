@@ -40,6 +40,20 @@ let registered = false;
 const captureGenerations = new Map<number, number>();
 const captureTimers = new Map<number, ReturnType<typeof setTimeout>>();
 const retryCounts = new Map<number, number>();
+const navigationSources = new Map<number, PageSnapshot>();
+
+function isRelabeledChapter(snapshot: PageSnapshot, previous?: PageSnapshot): boolean {
+  if (!previous || snapshot.title !== previous.title) return false;
+  const nextUrl = new URL(snapshot.url);
+  const oldUrl = new URL(previous.url);
+  if (nextUrl.origin !== oldUrl.origin || nextUrl.pathname === oldUrl.pathname) return false;
+  const texts = (value: PageSnapshot) => value.blocks.filter((block) => block.type !== "heading").map((block) => block.text.trim()).filter(Boolean);
+  const oldTexts = new Set(texts(previous));
+  const nextTexts = texts(snapshot);
+  if (!nextTexts.length) return false;
+  const matches = nextTexts.filter((text) => oldTexts.has(text)).length;
+  return matches === nextTexts.length || (matches >= 3 && matches / nextTexts.length >= 0.8);
+}
 
 function failure(
   code: StudyFailure["error"]["code"],
@@ -111,7 +125,6 @@ export async function ensureShadowMermaidHook(): Promise<void> {
 
 export function isSupportedStudyUrl(
   value: string | undefined,
-  authorizedOrigin = studyState.authorizedOrigin,
 ): boolean {
   if (!value) {
     return false;
@@ -119,8 +132,9 @@ export function isSupportedStudyUrl(
 
   try {
     const url = new URL(value);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
-    return !authorizedOrigin || url.origin === authorizedOrigin;
+    // URL support is independent from the last authorized site. Authorization
+    // is checked separately through isOriginAuthorized / hasSitePermission.
+    return url.protocol === "http:" || url.protocol === "https:";
   } catch {
     return false;
   }
@@ -288,7 +302,7 @@ export async function getStudyTabContext(): Promise<StudyTabContext> {
     // Context describes the page itself. Authorization is reported
     // separately so an authorized A tab does not make an unauthorized B tab
     // look like an unsupported page.
-    supported: isSupportedStudyUrl(url ?? undefined, undefined),
+    supported: isSupportedStudyUrl(url ?? undefined),
     hasPermission: await hasSitePermission(originOf(url ?? undefined)),
   };
 }
@@ -308,11 +322,11 @@ function isCurrentGeneration(tabId: number, generation: number): boolean {
   return captureGenerations.get(tabId) === generation;
 }
 
-function scheduleCapture(tabId: number, delayMs = 250): void {
+function scheduleCapture(tabId: number, delayMs = 250, forceRefresh = false): void {
   const generation = nextGeneration(tabId);
   const timer = setTimeout(() => {
     captureTimers.delete(tabId);
-    void runAutomaticCapture(tabId, generation);
+    void runAutomaticCapture(tabId, generation, forceRefresh);
   }, delayMs);
   captureTimers.set(tabId, timer);
 }
@@ -343,6 +357,7 @@ function trimSavedChapters(): void {
 async function restoreCachedChapterForTab(
   tabId: number,
   url: string,
+  pageTitle?: string,
 ): Promise<boolean> {
   const chapterId = deriveChapterId(url);
   const snapshot = studyState.snapshotsByChapter[chapterId];
@@ -351,6 +366,7 @@ async function restoreCachedChapterForTab(
   // cache hit is safe only when it belongs to the exact browser URL; the
   // normalized chapter key still groups the stored history for retention.
   if (!snapshot || !previous || snapshot.url !== url) return false;
+  if (pageTitle?.trim() && snapshot.title.trim() !== pageTitle.trim()) return false;
   const now = new Date().toISOString();
   const session: StudySession = {
     ...previous,
@@ -454,14 +470,7 @@ async function prepareForNavigationCapture(
   tabId: number,
   url: string | undefined,
 ): Promise<void> {
-  const sameCurrentPage =
-    url !== undefined &&
-    studyState.currentSession !== undefined &&
-    studyState.currentSession.tabId === tabId &&
-    studyState.currentSession.sourceUrl === url;
-  if (sameCurrentPage && studyState.currentSnapshot) {
-    return;
-  }
+  if (studyState.currentSnapshot) navigationSources.set(tabId, studyState.currentSnapshot);
 
   studyState = {
     ...studyState,
@@ -551,6 +560,7 @@ async function disableStudyAfterPermissionLoss(
 async function runAutomaticCapture(
   tabId: number,
   generation: number,
+  forceRefresh = false,
 ): Promise<void> {
   await ensureStateReady();
   if (
@@ -581,7 +591,7 @@ async function runAutomaticCapture(
 
   const url = getTabUrl(tab);
   const origin = originOf(url);
-  if (!isSupportedStudyUrl(url, undefined)) {
+  if (!isSupportedStudyUrl(url)) {
     await deactivateCurrentTab(
       tabId,
       origin,
@@ -638,7 +648,7 @@ async function runAutomaticCapture(
   const verifiedUrl = getTabUrl(verifiedTab);
   if (
     verifiedUrl !== url ||
-    !isSupportedStudyUrl(verifiedUrl, undefined) ||
+    !isSupportedStudyUrl(verifiedUrl) ||
     !isCurrentGeneration(tabId, generation) ||
     !studyState.enabled ||
     studyState.activeTabId !== tabId
@@ -649,7 +659,7 @@ async function runAutomaticCapture(
     return;
   }
 
-  if (verifiedUrl && (await restoreCachedChapterForTab(tabId, verifiedUrl))) {
+  if (!forceRefresh && verifiedUrl && (await restoreCachedChapterForTab(tabId, verifiedUrl, verifiedTab.title))) {
     return;
   }
 
@@ -665,7 +675,7 @@ async function runAutomaticCapture(
   studyState = { ...studyState, status: "CAPTURING", lastError: undefined };
   broadcastState();
 
-  const response = await captureTab(tabId, {
+  let response = await captureTab(tabId, {
     shouldContinue: async () => {
       if (
         !isCurrentGeneration(tabId, generation) ||
@@ -698,11 +708,14 @@ async function runAutomaticCapture(
     return;
   }
 
+  if (response.ok && isRelabeledChapter(response.snapshot, navigationSources.get(tabId))) {
+    response = { ok: false, error: { code: "STALE_TAB", message: "新章节仍显示上一章节正文，请等待页面加载完成后重新采集。" } };
+  }
   if (!response.ok) {
     const retries = retryCounts.get(tabId) ?? 0;
     if (retries < RETRY_DELAYS_MS.length && isRetryableCaptureFailure(response.error.code)) {
       retryCounts.set(tabId, retries + 1);
-      scheduleCapture(tabId, RETRY_DELAYS_MS[retries]);
+      scheduleCapture(tabId, RETRY_DELAYS_MS[retries], forceRefresh);
       return;
     }
     retryCounts.delete(tabId);
@@ -725,7 +738,7 @@ async function enableStudyMode(): Promise<StudyActionResult> {
   if (!url) {
     return failure("URL_UNAVAILABLE", "无法获取当前标签页 URL，请重新打开侧边栏。");
   }
-  if (!isSupportedStudyUrl(url, undefined)) {
+  if (!isSupportedStudyUrl(url)) {
     return failure(
       "UNSUPPORTED_SITE",
       "当前页面不是 HTTP/HTTPS 教程页面。",
@@ -758,10 +771,10 @@ async function enableStudyMode(): Promise<StudyActionResult> {
     lastError: undefined,
   };
   await persistState();
-  if (await restoreCachedChapterForTab(tabId, url)) {
-    return { ok: true, value: studyState };
-  }
-  scheduleCapture(tabId, 50);
+  // An explicit capture must repair stale caches, not just reopen them.
+  studyState = { ...studyState, currentSession: undefined, currentSnapshot: undefined, status: "CAPTURING" };
+  broadcastState();
+  scheduleCapture(tabId, 50, true);
   return { ok: true, value: studyState };
 }
 
@@ -785,6 +798,7 @@ async function pauseStudyMode(): Promise<StudyActionResult> {
 }
 
 async function revokeStudyMode(): Promise<StudyActionResult> {
+  navigationSources.clear();
   const authorizedOrigins = studyState.authorizedOrigins ?? [];
   const result = await pauseStudyMode();
   if (!result.ok) {
@@ -819,7 +833,7 @@ async function handleNavigationEvent(url: string, tabId: number): Promise<void> 
     return;
   }
   const origin = originOf(url);
-  if (!isSupportedStudyUrl(url, undefined)) {
+  if (!isSupportedStudyUrl(url)) {
     await deactivateCurrentTab(
       tabId,
       origin,
@@ -869,12 +883,13 @@ async function handleNavigationEvent(url: string, tabId: number): Promise<void> 
     studyState.currentSession?.tabId === tabId &&
     studyState.currentSession.sourceUrl === url &&
     studyState.currentSnapshot &&
+    (!currentTab.title?.trim() || currentTab.title.trim() === studyState.currentSnapshot.title.trim()) &&
     studyState.status === "SOURCE_READY"
   ) {
     return;
   }
 
-  if (await restoreCachedChapterForTab(tabId, url)) {
+  if (await restoreCachedChapterForTab(tabId, url, currentTab.title)) {
     return;
   }
 
@@ -895,11 +910,15 @@ async function handleTabUpdated(
   }
 
   const url = getTabUrl(tab);
-  if (changeInfo.url && !isSupportedStudyUrl(changeInfo.url, undefined)) {
+  if (url && changeInfo.title && studyState.currentSnapshot?.title !== changeInfo.title) {
+    await handleNavigationEvent(url as string, tabId);
+    return;
+  }
+  if (changeInfo.url && !isSupportedStudyUrl(changeInfo.url)) {
     await handleNavigationEvent(changeInfo.url, tabId);
     return;
   }
-  if (url && isSupportedStudyUrl(url, undefined)) {
+  if (url && isSupportedStudyUrl(url)) {
     if (changeInfo.status === "complete" || changeInfo.url) {
       await handleNavigationEvent(url, tabId);
     }
@@ -911,8 +930,6 @@ async function handleTabActivated(tabId: number): Promise<void> {
   // Keep the side panel's target tab current even while study mode is paused.
   // Otherwise returning from an unauthorized tab can query the stale tab and
   // report that the current URL is unavailable.
-  setCaptureTarget(tabId);
-
   let tab: chrome.tabs.Tab;
   try {
     tab = await chrome.tabs.get(tabId);
@@ -920,6 +937,9 @@ async function handleTabActivated(tabId: number): Promise<void> {
     return;
   }
   const url = getTabUrl(tab);
+  // Opening our own workbench must not replace the learning page target.
+  if (url?.startsWith("chrome-extension://") && url.includes("/sidepanel.html")) return;
+  setCaptureTarget(tabId);
   const origin = originOf(url);
 
   if (!studyState.enabled) {
@@ -930,7 +950,7 @@ async function handleTabActivated(tabId: number): Promise<void> {
       !studyState.authorizedOrigin &&
       !studyState.currentSession &&
       !studyState.currentSnapshot &&
-      isSupportedStudyUrl(url, undefined) &&
+      isSupportedStudyUrl(url) &&
       isOriginAuthorized(origin) &&
       (await hasSitePermission(origin));
     if (canRecoverLegacyStudy) {
@@ -967,7 +987,7 @@ async function handleTabActivated(tabId: number): Promise<void> {
     }
     return;
   }
-  if (!isSupportedStudyUrl(url, undefined)) {
+  if (!isSupportedStudyUrl(url)) {
     await deactivateCurrentTab(
       tabId,
       origin,
@@ -1005,6 +1025,7 @@ async function handleTabActivated(tabId: number): Promise<void> {
 }
 
 async function handleTabRemoved(tabId: number): Promise<void> {
+  navigationSources.delete(tabId);
   await ensureStateReady();
   if (studyState.activeTabId !== tabId) {
     return;
@@ -1025,7 +1046,7 @@ async function recordManualSnapshot(snapshot: PageSnapshot): Promise<void> {
   const snapshotOrigin = originOf(snapshot.url);
   if (
     tabId === undefined ||
-    !isSupportedStudyUrl(snapshot.url, undefined) ||
+    !isSupportedStudyUrl(snapshot.url) ||
     !isOriginAuthorized(snapshotOrigin)
   ) {
     return;

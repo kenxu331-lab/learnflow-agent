@@ -4,12 +4,16 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
 from typing import Any
 
 from app.annotation_planner import AnnotationPlanner
+from app.archive.locking import archive_mutex
+from app.archive.planning import build_batch, candidate_fingerprint
 from app.core.config import Settings
 from app.knowledge.errors import KnowledgeServiceError
+from app.knowledge.schemas import PublishCandidateResponse
 from app.knowledge.store import KnowledgeStore
 from app.notes.errors import NoteServiceError
 from app.notes.resolver import NoteResolver
@@ -77,7 +81,9 @@ class AnnotationWriteService:
                     applied_content_hash=revision,
                 )
             elif revision == intent["expected_file_revision"]:
-                self.store.update_annotation_intent(intent["intent_id"], status="pending")
+                self.store.update_annotation_intent(
+                    intent["intent_id"], status="pending"
+                )
             else:
                 self.store.update_annotation_intent(
                     intent["intent_id"],
@@ -100,7 +106,9 @@ class AnnotationWriteService:
                 "请先启用当前 Profile + Vault 的自动归档授权。",
                 403,
             )
-        candidate = self.planner.authoritative_candidate(knowledge_id, knowledge_version)
+        candidate = self.planner.authoritative_candidate(
+            knowledge_id, knowledge_version
+        )
         if candidate is None:
             raise KnowledgeServiceError(
                 "publish_candidate_not_found",
@@ -120,7 +128,9 @@ class AnnotationWriteService:
                 planned_content_hash=None,
             )
             self.store.update_annotation_intent(
-                intent["intent_id"], status="needs_review", failure_code="planner_conflict"
+                intent["intent_id"],
+                status="needs_review",
+                failure_code="planner_conflict",
             )
             return AnnotationCommitResponse(
                 status="needs_review", intentId=intent["intent_id"], plan=plan
@@ -155,7 +165,9 @@ class AnnotationWriteService:
             if (
                 current_document is None
                 or current_revision != plan.expectedFileRevision
-                or not self.planner.source_anchor_matches_document(candidate, current_document)
+                or not self.planner.source_anchor_matches_document(
+                    candidate, current_document
+                )
             ):
                 intent = self.store.create_annotation_intent(
                     scope_id=plan.targetVaultScope,
@@ -180,7 +192,9 @@ class AnnotationWriteService:
                     }
                 )
                 return AnnotationCommitResponse(
-                    status="needs_review", intentId=intent["intent_id"], plan=review_plan,
+                    status="needs_review",
+                    intentId=intent["intent_id"],
+                    plan=review_plan,
                     failureCode="source_changed",
                 )
             planned_hash = _content_hash(updated)
@@ -224,7 +238,9 @@ class AnnotationWriteService:
                     }
                 )
                 return AnnotationCommitResponse(
-                    status="needs_review", intentId=intent["intent_id"], plan=review_plan,
+                    status="needs_review",
+                    intentId=intent["intent_id"],
+                    plan=review_plan,
                     failureCode=error.code,
                 )
             self.store.update_annotation_intent(
@@ -235,3 +251,103 @@ class AnnotationWriteService:
             return AnnotationCommitResponse(
                 status="published", intentId=intent["intent_id"], plan=plan
             )
+
+    def commit_approved_batch(
+        self,
+        candidates: list[PublishCandidateResponse],
+        *,
+        expected_revision: str,
+        planned_content_hash: str,
+        target_path: str,
+    ) -> list[AnnotationCommitResponse]:
+        """Write one already-approved combined Diff, with no implicit re-approval."""
+        target = os.path.normcase(str(self.planner.vault.target_path(target_path)))
+        with archive_mutex(self.settings, "file:" + target):
+            for candidate in candidates:
+                current = self.planner.authoritative_candidate(
+                    candidate.knowledgeId, candidate.knowledgeVersion
+                )
+                if current is None or candidate_fingerprint(
+                    current
+                ) != candidate_fingerprint(candidate):
+                    raise KnowledgeServiceError(
+                        "archive_version_changed",
+                        "知识版本、资格或来源已变化，请重新预览。",
+                        409,
+                    )
+            batch = build_batch(self.planner, candidates)
+            if (
+                batch.path != target_path
+                or batch.revision != expected_revision
+                or _content_hash(batch.after) != planned_content_hash
+            ):
+                raise KnowledgeServiceError(
+                    "archive_plan_changed",
+                    "当前文件或 Diff 与已确认计划不同，未写入。",
+                    409,
+                )
+            intents = []
+            for candidate, plan in zip(candidates, batch.plans, strict=True):
+                intent = self.store.create_annotation_intent(
+                    scope_id=plan.targetVaultScope,
+                    knowledge_id=candidate.knowledgeId,
+                    knowledge_version=candidate.knowledgeVersion,
+                    target_note_id=candidate.targetNoteId,
+                    target_relative_path=batch.path,
+                    expected_file_revision=batch.revision,
+                    operation=plan.plannedEdit.action,
+                    planned_content_hash=planned_content_hash,
+                )
+                intents.append(intent)
+                self.store.update_annotation_intent(
+                    intent["intent_id"],
+                    status="applying",
+                    attempts=intent["attempts"] + 1,
+                )
+            if planned_content_hash != batch.revision:
+                identity = self.resolver.resolve(candidates[0].sourceUrl)
+                try:
+                    revision = self.notes.replace_managed_note(
+                        identity=identity,
+                        relative_path=batch.path,
+                        expected_revision=batch.revision,
+                        content=batch.after,
+                    )
+                except NoteServiceError as error:
+                    for intent in intents:
+                        self.store.update_annotation_intent(
+                            intent["intent_id"],
+                            status="needs_review",
+                            failure_code=error.code,
+                        )
+                    raise
+                if revision != planned_content_hash:
+                    raise KnowledgeServiceError(
+                        "archive_hash_mismatch", "文件写入结果校验失败，请检查。", 409
+                    )
+            results = []
+            for intent, plan in zip(intents, batch.plans, strict=True):
+                status = "noop" if plan.plannedEdit.action == "noop" else "published"
+                self.store.update_annotation_intent(
+                    intent["intent_id"],
+                    status=status,
+                    applied_content_hash=planned_content_hash,
+                )
+                candidate = next(
+                    c for c in candidates if c.knowledgeId == plan.knowledgeId
+                )
+                actual = self.planner.plan(candidate)
+                if actual.plannedEdit:
+                    plan = plan.model_copy(
+                        update={
+                            "plannedEdit": plan.plannedEdit.model_copy(
+                                update={"anchorLine": actual.plannedEdit.anchorLine}
+                            )
+                        }
+                    )
+                results.append(
+                    AnnotationCommitResponse(
+                        status=status, intentId=intent["intent_id"], plan=plan
+                    )
+                )
+            return results

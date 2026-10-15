@@ -1,4 +1,8 @@
 import { isPageSnapshot } from "../capture/capture-service";
+import { isRuntimeActivity } from "./activity-types";
+import { isKnowledgeView } from "./knowledge-view";
+import { archiveApproval, isArchiveConfirmation, onceApproved, type ArchiveConfirmation, type KnowledgeReference } from "./archive-types";
+import { withOperationLock } from "../sidepanel/operation-lock";
 import type { PageSnapshot } from "../capture/types";
 import type {
   BackendClientFailure,
@@ -36,6 +40,8 @@ import type {
   PublishCandidatesResult,
   AnnotationCommitResponse,
   AnnotationCommitResult,
+  AnnotationPlanResponse,
+  KnowledgeDraftResponse,
 } from "./types";
 
 export const LOCAL_INGEST_URL =
@@ -261,6 +267,9 @@ function isStudyMessage(value: unknown): value is StudyMessage {
       isStudySource(value.source)) &&
     (value.origin === "user" || value.origin === "ai") &&
     typeof value.createdAt === "string"
+    && (!("activities" in value) || (Array.isArray(value.activities) && value.activities.every(isRuntimeActivity)))
+    && (!("knowledge" in value) || value.knowledge === null || isKnowledgeView(value.knowledge))
+    && (!("archiveConfirmations" in value) || (Array.isArray(value.archiveConfirmations) && value.archiveConfirmations.every(isArchiveConfirmation)))
   );
 }
 
@@ -652,6 +661,17 @@ export async function streamStudyChat(
   payload: StudyChatPayload,
   onDelta: (text: string) => void,
   signal?: AbortSignal,
+  onActivity?: (event: import("./activity-types").StudyActivityEvent) => void,
+): Promise<StudyChatResult> {
+  return withOperationLock(`chat:${payload.conversationId}`, () => streamStudyChatUnlocked(payload, onDelta, signal, onActivity),
+    () => failure("SERVER_ERROR", "此会话正在另一个工作台中生成回答，请等待完成。"));
+}
+
+async function streamStudyChatUnlocked(
+  payload: StudyChatPayload,
+  onDelta: (text: string) => void,
+  signal?: AbortSignal,
+  onActivity?: (event: import("./activity-types").StudyActivityEvent) => void,
 ): Promise<StudyChatResult> {
   const token = await getToken();
   if (typeof token !== "string") return token;
@@ -710,6 +730,12 @@ export async function streamStudyChat(
           onDelta(parsed.text);
         } else if (event === "done" && isStudyChatComplete(parsed)) {
           complete = parsed;
+        } else if (event === "activity") {
+          if (!isRuntimeActivity(parsed) || parsed.conversationId !== payload.conversationId || parsed.sourceUrl !== payload.sourceUrl) {
+            streamFailure = failure("INVALID_RESPONSE", "工具事件与当前学习来源不匹配。");
+          } else {
+            onActivity?.(parsed);
+          }
         } else if (event === "error" && isRecord(parsed)) {
           streamFailure = failure(
             typeof parsed.code === "string"
@@ -725,17 +751,22 @@ export async function streamStudyChat(
       }
     };
 
-    while (true) {
-      const result = await reader.read();
-      buffer += decoder.decode(result.value ?? new Uint8Array(), {
-        stream: !result.done,
-      });
-      const events = buffer.split(/\r?\n\r?\n/);
-      buffer = events.pop() ?? "";
-      events.forEach(consumeEvent);
-      if (result.done || streamFailure) break;
+    try {
+      while (true) {
+        const result = await reader.read();
+        buffer += decoder.decode(result.value ?? new Uint8Array(), {
+          stream: !result.done,
+        });
+        const events = buffer.split(/\r?\n\r?\n/);
+        buffer = events.pop() ?? "";
+        events.forEach(consumeEvent);
+        if (result.done || streamFailure) break;
+      }
+      if (buffer.trim()) consumeEvent(buffer);
+    } finally {
+      try { await reader.cancel(); } catch { /* Already aborted or disconnected. */ }
+      reader.releaseLock();
     }
-    if (buffer.trim()) consumeEvent(buffer);
     if (streamFailure) return streamFailure;
     return complete
       ? { ok: true, response: complete }
@@ -783,6 +814,14 @@ export async function getKnowledgeJobs(): Promise<KnowledgeJobsResult> {
 }
 
 export async function triggerKnowledgeExtraction(
+  chapterId: string,
+  conversationId: string,
+): Promise<KnowledgeTriggerResult> {
+  return withOperationLock(`extract:${conversationId}`, () => triggerKnowledgeExtractionUnlocked(chapterId, conversationId),
+    () => failure("SERVER_ERROR", "另一个工作台正在提交提炼任务。"));
+}
+
+async function triggerKnowledgeExtractionUnlocked(
   chapterId: string,
   conversationId: string,
 ): Promise<KnowledgeTriggerResult> {
@@ -871,12 +910,95 @@ export async function commitAnnotation(
   knowledgeId: string,
   knowledgeVersion: number,
 ): Promise<AnnotationCommitResult> {
+  return withOperationLock(`archive:${knowledgeId}:${knowledgeVersion}`, () => commitAnnotationUnlocked(knowledgeId, knowledgeVersion),
+    () => failure("SERVER_ERROR", "这条知识正在另一个工作台中归档。"));
+}
+
+async function commitAnnotationUnlocked(
+  knowledgeId: string,
+  knowledgeVersion: number,
+): Promise<AnnotationCommitResult> {
+  const approval = archiveApproval(knowledgeId, knowledgeVersion);
+  if (!approval) return failure("NOTE_CONFLICT", "请先打开真实归档预览并点击确认。");
+  const result = await onceApproved(approval.confirmationId, () => decideArchive(approval, "confirm"));
+  if (!result.ok) return result;
+  const receipt = result.response.results.find((item) => item.plan.knowledgeId === knowledgeId && item.plan.knowledgeVersion === knowledgeVersion);
+  if (result.ok && typeof BroadcastChannel !== "undefined" && typeof chrome !== "undefined" && typeof chrome.runtime?.getURL === "function") {
+    const channel = new BroadcastChannel("learnflow-workspace-v3");
+    channel.postMessage({ type: "archive_changed" });
+    channel.close();
+  }
+  if (receipt && isAnnotationCommitResponse(receipt)) return { ok: true, response: receipt };
+  return failure("NOTE_CONFLICT", result.response.message);
+}
+
+async function archiveJson(method: "GET" | "POST", path: string, payload?: unknown) {
+  const token = await getToken();
+  if (typeof token !== "string") return token;
+  try {
+    const response = await fetch(`${LOCAL_STUDY_CHAT_URL.replace(/\/chat$/, "/archive")}${path}`, {
+      method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: payload === undefined ? undefined : JSON.stringify(payload), signal: AbortSignal.timeout(BACKEND_TIMEOUT_MS),
+    });
+    const body: unknown = await response.json();
+    if (!response.ok) return failure("NOTE_CONFLICT", isRecord(body) && isRecord(body.error) && typeof body.error.message === "string" ? body.error.message : "归档请求失败，请检查本地服务。");
+    return { ok: true as const, response: body };
+  } catch { return failure("NETWORK_ERROR", "归档状态暂时无法确认；请恢复查看结果，不要另行重复写入。"); }
+}
+export async function prepareArchive(conversationId: string, references: KnowledgeReference[] = []) {
+  const result = await archiveJson("POST", "/prepare", { conversationId, references });
+  return result.ok && isArchiveConfirmation(result.response) && result.response.conversationId === conversationId && (!references.length || (result.response.plans.length === references.length && result.response.plans.every((p) => references.some((ref) => ref.knowledgeId === p.knowledgeId && ref.version === p.knowledgeVersion)))) ? { ok: true as const, response: result.response } : result.ok ? failure("INVALID_RESPONSE", "归档计划与会话或知识版本不匹配。") : result;
+}
+export async function getArchive(view: Pick<ArchiveConfirmation, "confirmationId" | "conversationId">) {
+  const result = await archiveJson("GET", `/${encodeURIComponent(view.confirmationId)}?conversationId=${encodeURIComponent(view.conversationId)}`);
+  return result.ok && isArchiveConfirmation(result.response) && result.response.conversationId === view.conversationId && result.response.confirmationId === view.confirmationId ? { ok: true as const, response: result.response } : result.ok ? failure("INVALID_RESPONSE", "归档状态与当前确认不匹配。") : result;
+}
+export async function decideArchive(view: ArchiveConfirmation, decision: "confirm" | "cancel") {
+  const result = await archiveJson("POST", `/${encodeURIComponent(view.confirmationId)}/decision`, { conversationId: view.conversationId, planDigest: view.planDigest, decision });
+  return result.ok && isArchiveConfirmation(result.response) && result.response.conversationId === view.conversationId && result.response.confirmationId === view.confirmationId && result.response.planDigest === view.planDigest ? { ok: true as const, response: result.response } : result.ok ? failure("INVALID_RESPONSE", "归档回执与已确认计划不匹配。") : result;
+}
+export async function selectArchiveKnowledge(conversationId: string, references: KnowledgeReference[]) {
+  const result = await archiveJson("POST", "/selection", { conversationId, references });
+  return result.ok ? { ok: true as const } : result;
+}
+
+export async function previewAnnotation(candidate: PublishCandidateResponse): Promise<
+  { ok: true; response: AnnotationPlanResponse } | BackendClientFailure
+> {
   const result = await postLocalJson(
-    `${LOCAL_ANNOTATION_URL}/commit`,
-    { knowledgeId, knowledgeVersion, manualConfirmation: true },
-    isAnnotationCommitResponse,
+    `${LOCAL_ANNOTATION_URL}/plan`,
+    { candidate },
+    (value: unknown): value is AnnotationPlanResponse => isRecord(value) &&
+      typeof value.planId === "string" && typeof value.targetRelativePath === "string" &&
+      typeof value.diff === "string" && typeof value.conflictStatus === "string" &&
+      Array.isArray(value.headingPath) && value.headingPath.every((item) => typeof item === "string") &&
+      (value.conflictReason === null || typeof value.conflictReason === "string") &&
+      (value.plannedEdit === null || (isRecord(value.plannedEdit) && typeof value.plannedEdit.action === "string")),
   );
   return result.ok ? { ok: true, response: result.value } : result;
+}
+
+export async function getKnowledgeDrafts(chapterId: string): Promise<
+  { ok: true; response: KnowledgeDraftResponse[] } | BackendClientFailure
+> {
+  const token = await getToken();
+  if (typeof token !== "string") return token;
+  try {
+    const response = await fetch(`${LOCAL_KNOWLEDGE_URL}/chapters/${encodeURIComponent(chapterId)}/drafts`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) return statusFailure(response.status);
+    const body: unknown = await response.json();
+    if (!Array.isArray(body) || !body.every((item) => isRecord(item) &&
+      typeof item.knowledgeId === "string" && typeof item.topic === "string" &&
+      typeof item.body === "string" && typeof item.verificationStatus === "string" &&
+      Array.isArray(item.claims) && item.claims.every((claim) => isRecord(claim) && typeof claim.text === "string" && typeof claim.verificationStatus === "string"))) {
+      return failure("INVALID_RESPONSE", "本地服务返回的知识草稿无效。");
+    }
+    return { ok: true, response: body as KnowledgeDraftResponse[] };
+  } catch {
+    return failure("NETWORK_ERROR", "无法连接本地服务，请确认 FastAPI 已启动。");
+  }
 }
 
 function mapStudyStreamCode(

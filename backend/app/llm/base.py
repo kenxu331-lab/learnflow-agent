@@ -14,6 +14,21 @@ class LLMCompletion:
     usage: dict[str, int] | None = None
 
 
+@dataclass(frozen=True)
+class LLMToolCall:
+    """One fully assembled native function call, never executable code."""
+
+    call_id: str
+    name: str
+    arguments: str
+
+
+class ToolCallingProvider(Protocol):
+    def stream_agent(
+        self, *, messages: list[dict], tools: list[dict], max_output_tokens: int
+    ) -> AsyncIterator[str | LLMToolCall]: ...
+
+
 class LLMProvider(Protocol):
     """Async provider contract that can be replaced by a Fake Provider."""
 

@@ -1,0 +1,90 @@
+/* Shared by live Markdown, restored messages and the zoomable reader.
+   System fonts only: no remote font requests or extension CSP changes. */
+:root {
+  --message-font: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --message-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+:is(.chat-message-body, .message-reader .reader-body) {
+  min-width: 0;
+  font-family: var(--message-font);
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.8;
+  color: #24262b;
+  letter-spacing: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+:is(.chat-message-body, .message-reader .reader-body) p { margin: 0 0 1em; }
+:is(.chat-message-body, .message-reader .reader-body) :is(h1, h2, h3, h4, h5, h6) {
+  margin: 1.6em 0 .65em;
+  color: #17191d;
+  font-weight: 650;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+:is(.chat-message-body, .message-reader .reader-body) h1 { font-size: 1.5em; }
+:is(.chat-message-body, .message-reader .reader-body) h2 { font-size: 1.3em; }
+:is(.chat-message-body, .message-reader .reader-body) h3 { font-size: 1.15em; }
+:is(.chat-message-body, .message-reader .reader-body) :is(h4, h5, h6) { font-size: 1em; }
+:is(.chat-message-body, .message-reader .reader-body) > :first-child { margin-top: 0; }
+:is(.chat-message-body, .message-reader .reader-body) > :last-child { margin-bottom: 0; }
+:is(.chat-message-body, .message-reader .reader-body) strong { color: #17191d; font-weight: 650; }
+:is(.chat-message-body, .message-reader .reader-body) :is(ul, ol) { margin: .6em 0 1.1em; padding-left: 1.6em; }
+:is(.chat-message-body, .message-reader .reader-body) li { margin: .4em 0; padding-left: .15em; }
+:is(.chat-message-body, .message-reader .reader-body) li::marker { color: #666b74; }
+:is(.chat-message-body, .message-reader .reader-body) li > p { margin: .4em 0; }
+:is(.chat-message-body, .message-reader .reader-body) li > :is(ul, ol) { margin: .4em 0; }
+:is(.chat-message-body, .message-reader .reader-body) blockquote {
+  margin: 1.1em 0;
+  padding: .15em 0 .15em 1em;
+  border-left: 3px solid #d8dbe2;
+  color: #606773;
+}
+:is(.chat-message-body, .message-reader .reader-body) blockquote > :last-child { margin-bottom: 0; }
+:is(.chat-message-body, .message-reader .reader-body) a {
+  color: #4355b5;
+  text-decoration-thickness: 1px;
+  text-underline-offset: .2em;
+}
+:is(.chat-message-body, .message-reader .reader-body) hr { margin: 1.6em 0; border: 0; border-top: 1px solid #e7e8ec; }
+:is(.chat-message-body, .message-reader .reader-body) code {
+  font-family: var(--message-mono);
+  font-size: .875em;
+  line-height: inherit;
+  background: #f1f2f5;
+  color: #343640;
+  border-radius: 5px;
+  padding: .15em .35em;
+}
+:is(.chat-message-body, .message-reader .reader-body) .markdown-code {
+  width: 100%;
+  max-width: 100%;
+  margin: 1.1em 0;
+  padding: 16px;
+  border: 1px solid #283140;
+  border-radius: 12px;
+  background: #18202d;
+  color: #e4e9f0;
+  font-family: var(--message-mono);
+  font-size: 1em;
+  line-height: 1.65;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+  overflow-x: auto;
+  tab-size: 4;
+}
+:is(.chat-message-body, .message-reader .reader-body) .markdown-code code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+}
+.chat-message.user .chat-message-body { color: inherit; line-height: 1.7; }
+.message-reader .reader-body { font-size: 16px; padding: 24px clamp(16px, 5vw, 48px); }
+@media (min-width: 700px) {
+  .wide-workspace .chat-message-body { font-size: 16px; }
+}
