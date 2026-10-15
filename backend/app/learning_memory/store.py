@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
@@ -13,6 +15,9 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from app.knowledge.store import EventContextSeed, initialize_knowledge_schema
+from app.schemas.activity import StudyActivity
+from app.schemas.archive import ArchiveConfirmationView
+from app.schemas.knowledge_view import KnowledgeTaskView
 from app.schemas.study import (
     StudyChatRequest,
     StudyConversationResponse,
@@ -81,6 +86,59 @@ class LearningMemoryStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_messages_conversation
                     ON messages (conversation_id, created_at, message_id);
+                CREATE TABLE IF NOT EXISTS study_activities (
+                    event_id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL REFERENCES messages(message_id),
+                    sequence INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_study_activities_message
+                    ON study_activities (message_id, sequence);
+                CREATE TABLE IF NOT EXISTS agent_knowledge_tasks (
+                    task_id TEXT PRIMARY KEY,
+                    input_key TEXT NOT NULL UNIQUE,
+                    scope_id TEXT NOT NULL,
+                    chapter_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    source_url TEXT NOT NULL,
+                    target_event_at TEXT NOT NULL,
+                    target_event_id TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    job_id TEXT,
+                    run_id TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    result_json TEXT
+                );
+                CREATE TABLE IF NOT EXISTS study_knowledge_views (
+                    message_id TEXT PRIMARY KEY REFERENCES messages(message_id),
+                    task_id TEXT REFERENCES agent_knowledge_tasks(task_id),
+                    payload_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS study_archive_selections (
+                    scope_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    chapter_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    references_json TEXT NOT NULL,
+                    PRIMARY KEY(scope_id, conversation_id, chapter_id)
+                );
+                CREATE TABLE IF NOT EXISTS archive_confirmations (
+                    confirmation_id TEXT PRIMARY KEY,
+                    scope_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    chapter_id TEXT NOT NULL,
+                    selection_revision INTEGER NOT NULL,
+                    state TEXT NOT NULL,
+                    digest TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    view_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS study_archive_views (
+                    message_id TEXT NOT NULL REFERENCES messages(message_id),
+                    confirmation_id TEXT NOT NULL REFERENCES archive_confirmations(confirmation_id),
+                    PRIMARY KEY(message_id, confirmation_id)
+                );
                 CREATE TABLE IF NOT EXISTS selections (
                     selection_id TEXT PRIMARY KEY,
                     conversation_id TEXT NOT NULL
@@ -116,6 +174,12 @@ class LearningMemoryStore:
     def close(self) -> None:
         with self._lock:
             self._connection.close()
+
+    @contextmanager
+    def transaction(self):
+        """Serialize additive Agent metadata with message updates atomically."""
+        with self._lock, self._connection:
+            yield self._connection
 
     def start_conversation(self, request: StudyChatRequest) -> None:
         """Create or validate the chapter-bound conversation identity."""
@@ -254,10 +318,22 @@ class LearningMemoryStore:
         user_message_id: str,
         assistant_message_id: str,
         context: EventContextSeed | None,
+        dedupe_key: str | None = None,
     ) -> str:
-        event_id = f"event-{uuid4().hex}"
+        event_id = (
+            "event-agent-" + hashlib.sha256(dedupe_key.encode()).hexdigest()
+            if dedupe_key
+            else f"event-{uuid4().hex}"
+        )
         now = utc_now()
         with self._lock, self._connection:
+            if (
+                dedupe_key
+                and self._connection.execute(
+                    "SELECT 1 FROM learning_events WHERE event_id = ?", (event_id,)
+                ).fetchone()
+            ):
+                return event_id
             self._connection.execute(
                 """
                 INSERT INTO learning_events (
@@ -362,14 +438,52 @@ class LearningMemoryStore:
                 """,
                 (conversation_id,),
             ).fetchall()
+            messages = [_message_from_row(message) for message in rows]
+            for message in messages:
+                activity_rows = self._connection.execute(
+                    "SELECT payload_json FROM study_activities "
+                    "WHERE message_id = ? ORDER BY sequence",
+                    (message.messageId,),
+                ).fetchall()
+                message.activities = [
+                    StudyActivity.model_validate_json(item[0]) for item in activity_rows
+                ]
+                view = self._connection.execute(
+                    "SELECT payload_json FROM study_knowledge_views WHERE message_id = ?",
+                    (message.messageId,),
+                ).fetchone()
+                if view:
+                    message.knowledge = KnowledgeTaskView.model_validate_json(view[0])
+                archives = self._connection.execute(
+                    "SELECT ac.view_json FROM archive_confirmations ac "
+                    "JOIN study_archive_views sv ON sv.confirmation_id=ac.confirmation_id "
+                    "WHERE sv.message_id=? ORDER BY ac.rowid",
+                    (message.messageId,),
+                ).fetchall()
+                message.archiveConfirmations = [
+                    ArchiveConfirmationView.model_validate_json(item[0])
+                    for item in archives
+                ]
         return StudyConversationResponse(
             conversationId=row["conversation_id"],
             sessionId=row["session_id"],
             documentId=row["document_id"],
             sourceUrl=row["source_url"],
             pageTitle=row["page_title"],
-            messages=[_message_from_row(message) for message in rows],
+            messages=messages,
         )
+
+    def add_activity(self, message_id: str, activity: StudyActivity) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO study_activities VALUES (?, ?, ?, ?)",
+                (
+                    activity.eventId,
+                    message_id,
+                    activity.sequence,
+                    activity.model_dump_json(),
+                ),
+            )
 
     def messages_for_prompt(
         self, conversation_id: str, limit: int

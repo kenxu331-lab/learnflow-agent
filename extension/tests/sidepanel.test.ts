@@ -145,6 +145,8 @@ describe("side panel visibility state", () => {
   });
 
   it("sends an authorized chapter question and renders streamed Study Agent text", async () => {
+    let completeStream: (() => void) | undefined;
+    const activity = { type: "tool_started", eventId: "run-1:1", runId: "run-1", conversationId: "conversation-session-1", sourceUrl: snapshot.url, sequence: 1, activityId: "tool-1", toolName: "read_learning_context", summary: "读取原文", error: "", createdAt: snapshot.capturedAt };
     const studyState: StudyState = {
       schemaVersion: 1,
       enabled: true,
@@ -180,10 +182,11 @@ describe("side panel visibility state", () => {
     };
     const stream = new ReadableStream({
       start(controller) {
+        for (let i = 0; i < 2; i++) controller.enqueue(new TextEncoder().encode(`event: activity\ndata: ${JSON.stringify(activity)}\n\n`));
         controller.enqueue(
           new TextEncoder().encode('event: delta\ndata: {"text":"流式答案"}\n\n'),
         );
-        controller.enqueue(
+        completeStream = () => { controller.enqueue(
           new TextEncoder().encode(
             `event: done\ndata: ${JSON.stringify({
               schemaVersion: 1,
@@ -199,7 +202,7 @@ describe("side panel visibility state", () => {
             })}\n\n`,
           ),
         );
-        controller.close();
+        controller.close(); };
       },
     });
     const fetchMock = vi.fn().mockImplementation((url: string) => {
@@ -262,7 +265,7 @@ describe("side panel visibility state", () => {
     expect(document.querySelector("#chat-cloud-consent")).toBeNull();
     expect(document.querySelector("#chat-selection-button")).toBeNull();
     const input = document.querySelector<HTMLTextAreaElement>("#chatInput")!;
-    input.value = "解释当前代码";
+    input.value = "帮我提炼当前对话";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 
@@ -271,12 +274,71 @@ describe("side panel visibility state", () => {
         "流式答案",
       );
     });
-    expect(document.querySelector("#chat-messages h2")).not.toBeNull();
+    // First delta must be visible before the final SSE frame arrives.
+    expect(document.querySelector("#chat-messages h2")).toBeNull();
+    expect(input.disabled).toBe(true);
+    completeStream?.();
+    await vi.waitFor(() => expect(document.querySelector("#chat-messages h2")).not.toBeNull());
     expect(document.querySelector("#chat-messages strong")).not.toBeNull();
+    const trace = document.querySelector<HTMLDetailsElement>("#chat-messages .activity-trace")!;
+    expect(trace.open).toBe(false);
+    expect(trace.textContent).toContain("read_learning_context");
+    expect(trace.querySelectorAll("p")).toHaveLength(1);
+    const post = fetchMock.mock.calls.find(([, options]) => options?.method === "POST");
+    expect(JSON.parse(post![1].body).readonlyAgent).toBe(true);
+    expect(JSON.parse(post![1].body).knowledgeTools).toBe(true);
     expect(fetchMock).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/api/v1/study/chat",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("does not let a late cancelled chapter request reset the new chapter stream", async () => {
+    const session = { sessionId: "session-a", tabId: 7, chapterId: "a", sourceUrl: snapshot.url, pageTitle: snapshot.title, snapshotHash: "hash-a", capturedAt: snapshot.capturedAt, updatedAt: snapshot.capturedAt, status: "SOURCE_READY" as const };
+    const initial: StudyState = { schemaVersion: 1, enabled: true, status: "SOURCE_READY", authorizedOrigin: "https://example.com", activeTabId: 7, currentSession: session, currentSnapshot: snapshot, sessionsByChapter: { a: session }, snapshotsByChapter: { a: snapshot } };
+    let listener: ((message: unknown) => void) | undefined;
+    let resolveOld: ((response: Response) => void) | undefined;
+    const oldResponse = new Promise<Response>((resolve) => { resolveOld = resolve; });
+    let nextController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const newStream = new ReadableStream<Uint8Array>({ start(controller) { nextController = controller; } });
+    let posts = 0;
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+      if (url.includes("/conversations/")) return Promise.resolve(new Response("{}", { status: 404 }));
+      posts++;
+      return posts === 1 ? oldResponse : Promise.resolve(new Response(newStream));
+    }));
+    vi.stubGlobal("chrome", {
+      runtime: { sendMessage: vi.fn(), onMessage: { addListener: vi.fn((callback) => { listener = callback; }) } },
+      storage: { local: { get: vi.fn().mockImplementation((keys: unknown) => Promise.resolve(Array.isArray(keys) ? { learnflowStudyState: initial, learnflowStudySnapshots: {} } : { localApiToken: "test" })), set: vi.fn().mockResolvedValue(undefined), setAccessLevel: vi.fn().mockResolvedValue(undefined) } },
+      permissions: { contains: vi.fn().mockResolvedValue(true) },
+    });
+    document.body.innerHTML = new DOMParser().parseFromString(readFileSync(resolve(process.cwd(), "sidepanel.html"), "utf8"), "text/html").body.innerHTML;
+    await import("../src/sidepanel/main");
+    const input = document.querySelector<HTMLTextAreaElement>("#chatInput")!;
+    await vi.waitFor(() => expect(input.disabled).toBe(false));
+    const send = (question: string) => {
+      input.value = question;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    };
+    send("第一章问题");
+    await vi.waitFor(() => expect(posts).toBe(1));
+    const nextSnapshot = { ...snapshot, url: "https://example.com/chapter-b", title: "Chapter B" };
+    const nextSession = { ...session, chapterId: "b", sessionId: "session-b", sourceUrl: nextSnapshot.url, pageTitle: nextSnapshot.title };
+    listener?.({ type: "STUDY_STATE_CHANGED", state: { ...initial, currentSnapshot: nextSnapshot, currentSession: nextSession } });
+    await vi.waitFor(() => expect(input.disabled).toBe(false));
+    send("第二章问题");
+    await vi.waitFor(() => expect(posts).toBe(2));
+    // Simulate a transport which resolves after AbortSignal was already sent.
+    resolveOld?.(new Response('event: error\ndata: {"code":"cancelled","message":"旧请求结束"}\n\n'));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(input.disabled).toBe(true);
+    nextController?.enqueue(new TextEncoder().encode('event: delta\ndata: {"text":"第二章正在流式回答"}\n\n'));
+    await vi.waitFor(() => expect(document.querySelector("#chat-messages")?.textContent).toContain("第二章正在流式回答"));
+    expect(document.querySelector("#chat-messages")?.textContent).not.toContain("旧请求结束");
+    nextController?.enqueue(new TextEncoder().encode(`event: done\ndata: ${JSON.stringify({ schemaVersion: 1, conversationId: "conversation-session-b", message: { schemaVersion: 1, messageId: "b1", role: "assistant", content: "第二章正在流式回答", origin: "ai", createdAt: snapshot.capturedAt } })}\n\n`));
+    nextController?.close();
+    await vi.waitFor(() => expect(input.disabled).toBe(false));
   });
 
   it("keeps earlier turns when study state refreshes during a later stream", async () => {

@@ -11,14 +11,23 @@
       <header class="panel-head">
         <span class="logo" aria-hidden="true"><svg class="ic"><use href="#i-sparkle" /></svg></span>
         <h1 id="title" class="brand-text">LearnFlow</h1>
-        <span class="sub-tag">LEARNING</span>
+        <span class="sub-tag">WORKSPACE V3</span>
         <span class="head-spacer"></span>
+        <button id="notesBtn" class="icon-btn" type="button" aria-label="打开笔记与知识面板" title="笔记、候选与最近归档">
+          <svg class="ic"><use href="#i-note" /></svg>
+        </button>
+        <button id="wideBtn" class="icon-btn" type="button" aria-label="打开宽屏工作台" title="打开宽屏工作台">
+          <svg class="ic"><use href="#i-expand" /></svg>
+        </button>
+        <button id="windowBtn" class="icon-btn" type="button" aria-label="在独立窗口打开" title="在独立窗口打开">
+          <svg class="ic"><use href="#i-window" /></svg>
+        </button>
         <button id="settingsBtn" class="icon-btn" type="button" aria-label="学习设置" title="学习设置">
           <svg class="ic"><use href="#i-settings" /></svg>
         </button>
       </header>
 
-      <section class="study-context" aria-labelledby="context-title">
+      <section class="study-context" aria-label="当前章节与来源">
         <span class="source-icon" aria-hidden="true"><svg class="ic"><use href="#i-book" /></svg></span>
         <div class="context-body">
           <div id="study-site" class="eyebrow">尚未授权教程网站</div>
@@ -33,33 +42,15 @@
         </div>
       </section>
 
-      <nav class="main-tabs" aria-label="学习工作台视图">
-        <button class="tab active" data-tab="chat" type="button" aria-current="page">
-          <svg class="ic"><use href="#i-message" /></svg>学习对话
-        </button>
-        <button class="tab" data-tab="notes" type="button" aria-current="false">
-          <svg class="ic"><use href="#i-note" /></svg>我的笔记 <span id="noteCount" class="count">0</span>
-        </button>
-      </nav>
-
       <section id="chatView" class="view active" aria-label="学习对话">
+        <div id="chat-scroll" class="chat-scroll">
         <div id="chat-intro" class="chat-intro">
           <div class="small-label">当前章节学习工作台</div>
           <div class="assistant-line">
             <div class="avatar" aria-hidden="true"><svg class="ic"><use href="#i-sparkle" /></svg></div>
             <div class="msg-content">
-              <div class="msg-title">LearnFlow <small>学习工作台</small></div>
-              <p id="chat-welcome">我是 LearnFlow Study Agent，擅长解释当前章节、分析代码、引用页面选区并支持连续追问。本轮对话不会自动写入 Obsidian。</p>
-              <div class="quick-grid">
-                <button class="quick" data-action="make-note" type="button">
-                  <span class="quick-icon green"><svg class="ic"><use href="#i-note" /></svg></span>
-                  <b>整理并保存当前章节</b><span>0 Token · 保留代码</span>
-                </button>
-                <button class="quick" data-action="ai-annotate" type="button">
-                  <span class="quick-icon"><svg class="ic"><use href="#i-sparkle" /></svg></span>
-                  <b>AI 注解当前小节</b><span>尚未接入 · 不会调用模型</span>
-                </button>
-              </div>
+              <div class="msg-title">LearnFlow <small>Study Chat</small></div>
+              <p id="chat-welcome">解释当前章节、分析代码、引用页面选区并支持连续追问。知识提炼和笔记归档都需要你的确认。</p>
               <div class="suggestions" aria-label="示例问题">
                 <button class="suggestion" data-prompt="解释当前章节的核心概念" type="button">解释当前章节的核心概念</button>
                 <button class="suggestion" data-prompt="这段代码在做什么？" type="button">这段代码在做什么？</button>
@@ -67,7 +58,6 @@
             </div>
           </div>
         </div>
-        <div id="chat-scroll" class="chat-scroll">
           <div id="chatList" class="chat-list">
           <div id="chat-unready-status" class="unready-card" role="status">
             等待当前章节采集后即可开始 Study Chat。
@@ -78,9 +68,17 @@
         </div>
       </section>
 
-      <section id="notesView" class="view" aria-label="学习笔记">
+      <section id="notesView" class="view workspace-drawer" aria-label="学习笔记">
+        <div class="workspace-drawer-head"><h2>笔记与知识</h2><button id="notes-drawer-close" class="icon-btn" type="button" aria-label="关闭笔记面板" title="关闭">×</button></div>
         <div class="notes-wrap">
-          <div class="notes-top"><h2>学习笔记</h2><span id="notesState" class="notes-badge">尚未生成</span></div>
+          <nav class="drawer-nav" aria-label="笔记与知识分类">
+            <button type="button" data-drawer-tab="notes" class="selected">我的笔记</button>
+            <button type="button" data-drawer-tab="knowledge">知识候选</button>
+            <button type="button" data-drawer-tab="history">最近归档</button>
+            <button type="button" data-drawer-tab="advanced">高级工具</button>
+          </nav>
+          <div id="drawer-notes" data-drawer-page="notes">
+          <div class="notes-top"><h2>学习笔记</h2><span id="notesState" class="notes-badge">尚未生成</span><span id="noteCount" class="notes-badge">0</span></div>
           <section class="document-v2-card" aria-labelledby="document-v2-title">
             <div class="document-v2-head">
               <div>
@@ -128,11 +126,25 @@
             </div>
             <p class="explain">兼容旧版笔记保存入口。</p>
           </div>
+          </div>
+          <div id="drawer-knowledge" data-drawer-page="knowledge" hidden><h3>当前章节的知识</h3><p class="muted">查看真实草稿、核验依据与归档预览。</p><div id="knowledge-drawer-list"></div></div>
+          <div id="drawer-history" data-drawer-page="history" hidden><h3>最近归档结果</h3><div id="archive-history-list" role="status"></div></div>
+          <div id="drawer-advanced" data-drawer-page="advanced" hidden></div>
         </div>
       </section>
+      <button id="drawer-shade" class="drawer-shade" type="button" aria-label="关闭辅助面板" hidden></button>
 
       <div id="composerArea" class="composer-area">
         <div class="composer">
+          <div id="tools-menu" class="tools-menu" hidden>
+            <button type="button" data-workspace-action="extract">提炼知识 <small>从当前对话整理知识候选</small></button>
+            <button type="button" data-workspace-action="knowledge">查看提炼 <small>查看候选与核验依据</small></button>
+            <button type="button" data-workspace-action="archive">归档知识 <small>查看预览并确认写入</small></button>
+            <button type="button" data-workspace-action="notes">我的笔记 <small>当前章节与 Markdown 预览</small></button>
+            <button type="button" data-workspace-action="section">整理当前章节 <small>保留原文和代码，生成预览</small></button>
+            <button type="button" data-action="ai-annotate">AI 注解当前小节 <small>保留现有入口</small></button>
+            <button type="button" data-workspace-action="advanced">高级工具 <small>采集、推荐重点与本地连接</small></button>
+          </div>
           <textarea id="chatInput" rows="2" aria-label="向学习助手提问" placeholder="问问当前教程中的任何问题…（回车发送，Shift+Enter 换行）" disabled></textarea>
           <div id="slash-command-menu" class="slash-command-menu" hidden role="listbox" aria-label="Agent 命令">
             <button type="button" data-slash-command="提炼"><b>/提炼</b><span>查看当前章节待确认知识</span></button>
@@ -140,11 +152,11 @@
             <button type="button" data-slash-command="归档"><b>/归档</b><span>选择一条知识并请求归档确认</span></button>
           </div>
           <div class="composer-footer">
-            <span class="composer-caption"><svg class="ic"><use href="#i-lock" /></svg><span id="composer-caption-text">会发送到 DeepSeek；当前选区会自动引用</span></span>
+            <div class="composer-tools"><button id="tools-menu-button" class="icon-btn" type="button" aria-label="学习工具" aria-expanded="false">＋</button><button id="chat-stop-button" class="text-button" type="button" hidden>停止生成</button><span class="composer-caption"><svg class="ic"><use href="#i-lock" /></svg><span id="composer-caption-text">会发送到 DeepSeek；当前选区会自动引用</span></span></div>
             <button id="chat-send-button" class="send" type="button" aria-label="发送问题" title="发送问题" disabled><svg class="ic"><use href="#i-up" /></svg></button>
           </div>
         </div>
-        <div class="footer-note">当前章节上下文会发送到 DeepSeek；学习记录保存在本地 SQLite</div>
+        <div class="footer-note">Enter 发送 · Shift+Enter 换行 <span>归档前由你确认</span></div>
       </div>
 
       <details id="advanced-tools" class="advanced-tools">
@@ -205,13 +217,17 @@
       <div id="error-panel" class="message-panel error-panel" role="alert" hidden><h2>采集失败</h2><p id="error-message"></p></div>
 
       <div id="settings" class="settings" role="dialog" aria-label="学习设置" hidden>
-        <h3>学习设置</h3>
+        <div class="workspace-drawer-head"><h3>学习设置</h3><button id="settings-close" class="icon-btn" type="button" aria-label="关闭设置">×</button></div>
+        <div class="settings-body">
         <div class="setting-row"><span>自动跟随教程</span><button id="study-pause-button" class="setting-mini-btn" type="button" hidden>暂停</button></div>
         <div class="setting-row"><span>站点授权</span><button id="study-revoke-button" class="setting-mini-btn" type="button" hidden>撤销</button></div>
         <p id="study-permission-status" class="setting-desc">站点访问权限与 Study Chat 的发送目标相互独立。</p>
         <p class="setting-desc">Study Chat 默认发送当前章节上下文；如果页面有选区，发送时会自动引用。</p>
         <p class="setting-desc">知识提炼默认手动：输入 <code>/提炼</code>，或完成三轮对话后在卡片中点击“提炼知识”。</p>
         <p class="setting-desc">知识归档默认手动：只有在知识卡片中点击“归档到笔记”才会写入 Markdown。</p>
+        <p class="setting-desc">Vault 路径及模型连接由本地后端配置。打开高级工具可检查连接和云端推荐授权。</p>
+        <button class="btn-outline" type="button" data-workspace-action="advanced">本地连接与高级工具</button>
+        </div>
       </div>
 
       <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -222,6 +238,17 @@
           <button id="close-unready" class="btn-primary" type="button">知道了</button>
         </div>
       </div>
+
+      <dialog id="message-reader" class="message-reader" aria-labelledby="message-reader-title">
+        <div class="reader-head"><strong id="message-reader-title">回答详情</strong><div class="reader-actions"><button id="reader-zoom-out" class="icon-btn" type="button" aria-label="缩小">−</button><button id="reader-zoom-in" class="icon-btn" type="button" aria-label="放大">＋</button><button id="reader-close" class="icon-btn" type="button" aria-label="关闭">×</button></div></div>
+        <div id="message-reader-body" class="reader-body"></div>
+        <div class="reader-foot"><span>独立阅读视图</span><button id="reader-copy" class="btn-outline" type="button">复制内容</button></div>
+      </dialog>
+      <dialog id="archive-confirm" class="archive-confirm" aria-labelledby="archive-confirm-title">
+        <header class="reader-head"><strong id="archive-confirm-title">归档预览与确认</strong><button id="archive-confirm-close" class="icon-btn" type="button" aria-label="关闭归档预览">×</button></header>
+        <div class="archive-confirm-body"><p>确认后写入下方文件；打开预览不会修改笔记。</p><div id="archive-plans"></div><p id="archive-confirm-status" role="status"></p></div>
+        <footer class="reader-foot"><button id="archive-cancel" class="btn-outline" type="button">取消</button><button id="archive-approve" class="btn-primary" type="button" disabled>确认归档</button></footer>
+      </dialog>
     </main>
 
     <svg class="icon-sprite" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
@@ -230,6 +257,8 @@
       <symbol id="i-message" viewBox="0 0 24 24"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5c-1.6 0-3-.4-4.3-1.2L3 20l1.2-5.1A8.5 8.5 0 1 1 21 11.5Z"/></symbol>
       <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></symbol>
       <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 20V4m-6 6 6-6 6 6"/></symbol>
+      <symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"/></symbol>
+      <symbol id="i-window" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 7h.01M10 7h.01"/></symbol>
       <symbol id="i-note" viewBox="0 0 24 24"><path d="M5 3h10l4 4v14H5z"/><path d="M14 3v5h5M8 12h8M8 16h8"/></symbol>
       <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
     </svg>

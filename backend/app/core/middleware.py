@@ -18,7 +18,15 @@ SECURED_POST_PATHS = {
     "/api/v1/study/chat",
     "/api/v1/knowledge/consent",
     "/api/v1/knowledge/trigger",
+    "/api/v1/study/archive/prepare",
+    "/api/v1/study/archive/selection",
 }
+
+
+def secured_path(path: str) -> bool:
+    return path in SECURED_POST_PATHS or (
+        path.startswith("/api/v1/study/archive/") and path.endswith("/decision")
+    )
 
 
 async def send_json_error(
@@ -109,7 +117,7 @@ class LocalRequestMiddleware:
         }
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or scope.get("path") not in SECURED_POST_PATHS:
+        if scope["type"] != "http" or not secured_path(scope.get("path", "")):
             await self.app(scope, receive, send)
             return
 
@@ -156,7 +164,7 @@ class RequestSizeLimitMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if (
             scope["type"] != "http"
-            or scope.get("path") not in SECURED_POST_PATHS
+            or not secured_path(scope.get("path", ""))
             or scope.get("method") != "POST"
         ):
             await self.app(scope, receive, send)

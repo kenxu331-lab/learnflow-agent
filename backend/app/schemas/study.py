@@ -15,6 +15,9 @@ from pydantic import (
     model_validator,
 )
 
+from app.schemas.activity import StudyActivity
+from app.schemas.archive import ArchiveConfirmationView, KnowledgeReference
+from app.schemas.knowledge_view import KnowledgeTaskView
 from app.schemas.page_snapshot import PageSnapshot
 
 MAX_CONVERSATION_ID = 200
@@ -51,10 +54,17 @@ class StudyChatRequest(BaseModel):
     selectedText: StrictStr | None = Field(default=None, max_length=MAX_SELECTED_TEXT)
     question: StrictStr = Field(min_length=1, max_length=MAX_QUESTION)
     cloudConsent: StrictBool
+    readonlyAgent: StrictBool = False
+    knowledgeTools: StrictBool = False
+    archiveTools: StrictBool = False
     snapshot: PageSnapshot
 
     @model_validator(mode="after")
     def validate_source(self) -> StudyChatRequest:
+        if self.knowledgeTools and not self.readonlyAgent:
+            raise ValueError("knowledgeTools requires Agent mode")
+        if self.archiveTools and not self.knowledgeTools:
+            raise ValueError("archiveTools requires knowledgeTools")
         parsed = urlsplit(self.sourceUrl)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("sourceUrl must use HTTP or HTTPS")
@@ -97,6 +107,9 @@ class StudyMessage(BaseModel):
     source: StudySource | None = None
     origin: Literal["user", "ai"]
     createdAt: datetime
+    activities: list[StudyActivity] = Field(default_factory=list)
+    knowledge: KnowledgeTaskView | None = None
+    archiveConfirmations: list[ArchiveConfirmationView] = Field(default_factory=list)
 
 
 class StudyConversationResponse(BaseModel):
@@ -111,6 +124,7 @@ class StudyConversationResponse(BaseModel):
     sourceUrl: StrictStr
     pageTitle: StrictStr
     messages: list[StudyMessage]
+    selectedKnowledge: list[KnowledgeReference] = Field(default_factory=list)
 
 
 class StudyChatComplete(BaseModel):

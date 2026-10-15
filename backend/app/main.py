@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.ai_notes import router as ai_notes_router
 from app.api.annotations import router as annotations_router
+from app.api.archive import router as archive_router
 from app.api.documents import router as documents_router
 from app.api.health import router as health_router
 from app.api.knowledge import router as knowledge_router
@@ -16,6 +17,7 @@ from app.api.knowledge import service as knowledge_service
 from app.api.notes import router as notes_router
 from app.api.pages import router as pages_router
 from app.api.study import router as study_router
+from app.api.study import service as study_service
 from app.core.config import get_settings
 from app.core.errors import http_exception_handler, validation_exception_handler
 from app.core.middleware import (
@@ -33,13 +35,21 @@ async def lifespan(_: FastAPI):
     stop = asyncio.Event()
     orchestrator = KnowledgePublishOrchestrator(settings, knowledge=knowledge_service)
     worker = asyncio.create_task(orchestrator.worker(stop))
+    knowledge_tasks_worker = asyncio.create_task(
+        study_service.knowledge_tasks.worker(stop)
+    )
     try:
         yield
     finally:
         stop.set()
         worker.cancel()
+        knowledge_tasks_worker.cancel()
         try:
             await worker
+        except asyncio.CancelledError:
+            pass
+        try:
+            await knowledge_tasks_worker
         except asyncio.CancelledError:
             pass
 
@@ -72,4 +82,5 @@ app.include_router(ai_notes_router)
 app.include_router(annotations_router)
 app.include_router(documents_router)
 app.include_router(study_router)
+app.include_router(archive_router)
 app.include_router(knowledge_router)

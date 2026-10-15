@@ -582,6 +582,10 @@ async function captureFromInitialTab(
     return failure("STALE_TAB", "采集结果与当前页面不一致，请重新采集。");
   }
 
+  if (currentTab?.title?.trim() && snapshot.title.trim() !== currentTab.title.trim()) {
+    return failure("STALE_TAB", "页面标题与采集正文尚未同步，正在等待章节切换完成，请重试。");
+  }
+
   if (snapshot.stats.characterCount === 0 || snapshot.blocks.length === 0) {
     logCaptureStage("empty-content", initialTab);
     return failure("EMPTY_CONTENT", "当前页面没有提取到足够的正文内容。");

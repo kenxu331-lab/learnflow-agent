@@ -15,7 +15,7 @@ from openai import (
 )
 
 from app.core.config import Settings
-from app.llm.base import LLMCompletion
+from app.llm.base import LLMCompletion, LLMToolCall
 from app.llm.errors import LLMProviderError
 
 
@@ -162,6 +162,27 @@ class OpenAICompatibleProvider:
     ) -> AsyncIterator[str]:
         """Stream a normal DeepSeek/OpenAI-compatible chat completion."""
 
+        async for item in self._stream_completion(
+            messages=messages, max_output_tokens=max_output_tokens
+        ):
+            if isinstance(item, str):
+                yield item
+
+    def stream_agent(
+        self, *, messages: list[dict], tools: list[dict], max_output_tokens: int
+    ) -> AsyncIterator[str | LLMToolCall]:
+        return self._stream_completion(
+            messages=messages, tools=tools, max_output_tokens=max_output_tokens
+        )
+
+    async def _stream_completion(
+        self,
+        *,
+        messages: list[dict],
+        max_output_tokens: int,
+        tools: list[dict] | None = None,
+    ) -> AsyncIterator[str | LLMToolCall]:
+
         if self.settings.llm_provider != "openai_compatible":
             raise LLMProviderError(
                 "llm_not_configured",
@@ -197,13 +218,56 @@ class OpenAICompatibleProvider:
                 stream=True,
                 extra_body={"thinking": {"type": "disabled"}},
                 max_tokens=max_output_tokens,
+                **({"tools": tools, "tool_choice": "auto"} if tools else {}),
             )
+            calls: dict[int, dict[str, str]] = {}
+            finish_reason = None
             async for chunk in response:
                 if not chunk.choices:
                     continue
-                content = chunk.choices[0].delta.content
+                choice = chunk.choices[0]
+                finish_reason = getattr(choice, "finish_reason", None) or finish_reason
+                content = choice.delta.content
                 if isinstance(content, str) and content:
                     yield content
+                if tools:
+                    for delta in getattr(choice.delta, "tool_calls", None) or []:
+                        if delta.index not in calls:
+                            if len(calls) >= 4:
+                                raise LLMProviderError(
+                                    "agent_invalid_call", "模型单步工具调用过多。", 502
+                                )
+                            calls[delta.index] = {"id": "", "name": "", "arguments": ""}
+                        call = calls[delta.index]
+                        call["id"] += delta.id or ""
+                        if delta.function:
+                            call["name"] += delta.function.name or ""
+                            call["arguments"] += delta.function.arguments or ""
+                        if (
+                            len(call["arguments"]) > 8192
+                            or len(call["name"]) > 100
+                            or len(call["id"]) > 200
+                        ):
+                            raise LLMProviderError(
+                                "agent_invalid_call", "模型工具参数超过限制。", 502
+                            )
+            if tools:
+                if finish_reason not in {"stop", "tool_calls"}:
+                    raise LLMProviderError(
+                        "agent_incomplete_response",
+                        "模型响应未完整结束，未执行工具。",
+                        502,
+                    )
+                if calls and finish_reason != "tool_calls":
+                    raise LLMProviderError(
+                        "agent_invalid_call", "模型工具调用未完整结束。", 502
+                    )
+                for call in calls.values():
+                    if not call["id"] or not call["name"]:
+                        raise LLMProviderError(
+                            "agent_invalid_call", "模型返回了无效工具调用。", 502
+                        )
+                    yield LLMToolCall(call["id"], call["name"], call["arguments"])
         except LLMProviderError:
             raise
         except (AuthenticationError, PermissionDeniedError) as error:

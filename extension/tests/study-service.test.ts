@@ -135,7 +135,7 @@ describe("M01-04B study session service", () => {
 
   it("supports a user-authorized non-FastAPI HTTPS tutorial via activeTab", async () => {
     const genericUrl = "https://docs.example.com/guide/";
-    const genericTab = { ...tab, url: genericUrl } as chrome.tabs.Tab;
+    const genericTab = { ...tab, url: genericUrl, title: "Example guide" } as chrome.tabs.Tab;
     const genericSnapshot = makeSnapshot(genericUrl, "Example guide");
     const { executeScript, chromeMock } = createChromeMock(
       {},
@@ -152,6 +152,40 @@ describe("M01-04B study session service", () => {
     expect(response).toMatchObject({ ok: true, value: { authorizedOrigin: "https://docs.example.com" } });
     expect(executeScript).toHaveBeenCalledTimes(1);
     expect(service.getCurrentStudyState().currentSnapshot?.url).toBe(genericUrl);
+  });
+
+  it.each([
+    "https://developer.mozilla.org/zh-CN/docs/Web/JavaScript",
+    "http://localhost:3000/article",
+  ])("can authorize and capture %s after a different site was already captured", async (url) => {
+    const { executeScript, getTab, chromeMock } = createChromeMock();
+    const { service } = await loadService();
+    await captureInitialPage(service);
+    const previousSession = service.getCurrentStudyState().currentSession;
+    getTab.mockResolvedValue({ ...tab, url, title: "Another website" });
+    executeScript.mockResolvedValue([{ result: makeSnapshot(url, "Another website") }]);
+
+    // Support describes the URL protocol, not the previously authorized origin.
+    expect((await service.getStudyTabContext()).supported).toBe(true);
+    const response = await service.handleStudyRequest({ type: STUDY_ENABLE_REQUEST });
+    expect(response).toMatchObject({ ok: true });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(service.getCurrentStudyState().currentSnapshot?.url).toBe(url);
+    expect(service.getCurrentStudyState().authorizedOrigins).toContain(new URL(url).origin);
+    expect(service.getCurrentStudyState().authorizedOrigins).toContain(new URL(TAB_URL).origin);
+    expect(Object.keys(service.getCurrentStudyState().snapshotsByChapter)).toHaveLength(2);
+
+    getTab.mockResolvedValue(tab);
+    activatedListener(chromeMock)({ tabId: 7 });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(service.getCurrentStudyState().currentSession?.sessionId).toBe(previousSession?.sessionId);
+    expect(service.getCurrentStudyState().currentSnapshot?.url).toBe(TAB_URL);
+  });
+
+  it.each(["chrome://settings/", "edge://extensions/", "about:blank", "file:///C:/notes.html", "not-a-url"])("does not treat %s as a capturable website", async (url) => {
+    createChromeMock();
+    const { service } = await loadService();
+    expect(service.isSupportedStudyUrl(url)).toBe(false);
   });
 
   it("keeps site authorization while clearing only the live state on an unauthorized origin", async () => {
@@ -173,6 +207,60 @@ describe("M01-04B study session service", () => {
       activeOrigin: "https://docs.example.com",
     });
     expect(loadedService.getCurrentStudyState().currentSnapshot).toBeUndefined();
+  });
+
+  it("repairs a relabeled chapter when the delayed browser title arrives", async () => {
+    const { executeScript, getTab, chromeMock } = createChromeMock();
+    const { service } = await loadService();
+    await captureInitialPage(service);
+    const nextUrl = "https://fastapi.tiangolo.com/tutorial/response-status-code/";
+    // Reproduce SPA timing: URL changes while title and DOM are still old.
+    getTab.mockResolvedValue({ ...tab, url: nextUrl });
+    executeScript.mockResolvedValue([{ result: { ...makeSnapshot(), url: nextUrl } }]);
+    historyListener(chromeMock)({ tabId: 7, url: nextUrl, frameId: 0 });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(service.getCurrentStudyState().currentSnapshot).toBeUndefined();
+
+    const fresh = makeSnapshot(nextUrl, "Response status");
+    getTab.mockResolvedValue({ ...tab, url: nextUrl, title: fresh.title });
+    executeScript.mockResolvedValue([{ result: fresh }]);
+    const updated = chromeMock.tabs.onUpdated.addListener.mock.calls[0][0] as (id: number, change: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab) => void;
+    updated(7, { title: fresh.title }, { ...tab, url: nextUrl, title: fresh.title } as chrome.tabs.Tab);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(service.getCurrentStudyState().currentSnapshot?.title).toBe("Response status");
+    expect(service.getCurrentStudyState().currentSnapshot?.url).toBe(nextUrl);
+    expect(Object.keys(service.getCurrentStudyState().snapshotsByChapter)).toHaveLength(2);
+  });
+
+  it("an explicit capture bypasses the cache and keeps the same conversation identity", async () => {
+    const { executeScript } = createChromeMock();
+    const { service } = await loadService();
+    await captureInitialPage(service);
+    const original = service.getCurrentStudyState().currentSession?.sessionId;
+    const fresh = makeSnapshot();
+    fresh.blocks[1].text = "Updated tutorial content.";
+    fresh.stats.characterCount = TAB_TITLE.length + fresh.blocks[1].text.length;
+    executeScript.mockResolvedValue([{ result: fresh }]);
+    await service.handleStudyRequest({ type: STUDY_ENABLE_REQUEST });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(executeScript).toHaveBeenCalledTimes(2);
+    expect(service.getCurrentStudyState().currentSnapshot?.blocks[1].text).toBe("Updated tutorial content.");
+    expect(service.getCurrentStudyState().currentSession?.sessionId).toBe(original);
+  });
+
+  it("hides a stale same-URL snapshot while a title correction is being recaptured", async () => {
+    const { executeScript, getTab, chromeMock } = createChromeMock();
+    const { service } = await loadService();
+    await captureInitialPage(service);
+    const fresh = makeSnapshot(TAB_URL, "Corrected chapter title");
+    getTab.mockResolvedValue({ ...tab, title: fresh.title });
+    executeScript.mockResolvedValue([{ result: fresh }]);
+    const updated = chromeMock.tabs.onUpdated.addListener.mock.calls[0][0] as (id: number, change: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab) => void;
+    updated(7, { title: fresh.title }, { ...tab, title: fresh.title } as chrome.tabs.Tab);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(service.getCurrentStudyState().currentSnapshot).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(service.getCurrentStudyState().currentSnapshot?.title).toBe(fresh.title);
   });
 
   it("restores A's cached chapter after switching to B and back without recapturing", async () => {

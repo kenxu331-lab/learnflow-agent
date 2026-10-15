@@ -1,4 +1,6 @@
 import "./style.css";
+import "./workspace-v3.css";
+import "./message-typography.css";
 
 import {
   PAGE_CAPTURE_REQUEST,
@@ -11,6 +13,7 @@ import {
   getAnnotationIntents,
   getPublishCandidates,
   commitAnnotation,
+  prepareArchive, decideArchive, selectArchiveKnowledge,
   getKnowledgeJobs,
   triggerKnowledgeExtraction,
   getStudyConversation,
@@ -53,6 +56,17 @@ import {
   loadStudyState,
 } from "../study/session-store";
 import { routeCommandIntent } from "../commands/intent-router";
+import { confirmArchivePreview, initializeArchiveDialog } from "./archive-preview";
+import { initializeWorkspaceShell } from "./workspace-shell";
+import { highlightCode, renderActivityTrace } from "./message-presentation";
+import type { StudyActivityEvent } from "../backend/activity-types";
+import { pendingKnowledgeStates } from "../backend/knowledge-view";
+import { renderKnowledgeResults } from "./knowledge-results";
+import { renderArchiveCard } from "./archive-card";
+import { reviewArchiveConfirmation } from "./archive-preview";
+import type { ArchiveConfirmation, KnowledgeReference } from "../backend/archive-types";
+import type { KnowledgeTaskView } from "../backend/knowledge-view";
+import { KnowledgeResultPoller } from "./knowledge-poller";
 
 function requiredElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -65,6 +79,9 @@ function optionalElement<T extends Element>(selector: string): T | null {
 }
 
 const panelRoot = requiredElement<HTMLElement>(".sidepanel");
+if (new URLSearchParams(window.location.search).get("workspace") === "wide") {
+  document.body.classList.add("wide-workspace");
+}
 const captureButton = requiredElement<HTMLButtonElement>("#capture-button");
 const captureStatus = requiredElement<HTMLElement>("#capture-status");
 const resultPanel = requiredElement<HTMLElement>("#result-panel");
@@ -124,12 +141,17 @@ const studyPermissionStatus = requiredElement<HTMLElement>(
 );
 const settingsButton = requiredElement<HTMLButtonElement>("#settingsBtn");
 const settingsPanel = requiredElement<HTMLElement>("#settings");
+const notesButton = optionalElement<HTMLButtonElement>("#notesBtn");
+const wideWorkspaceButton = optionalElement<HTMLButtonElement>("#wideBtn");
+const windowWorkspaceButton = optionalElement<HTMLButtonElement>("#windowBtn");
+const notesDrawerClose = optionalElement<HTMLButtonElement>("#notes-drawer-close");
 const toast = optionalElement<HTMLElement>("#toast");
 const chatView = requiredElement<HTMLElement>("#chatView");
 const notesView = requiredElement<HTMLElement>("#notesView");
 const composerArea = requiredElement<HTMLElement>("#composerArea");
 const chatInput = requiredElement<HTMLTextAreaElement>("#chatInput");
 const chatSendButton = requiredElement<HTMLButtonElement>("#chat-send-button");
+const chatStopButton = optionalElement<HTMLButtonElement>("#chat-stop-button");
 const slashCommandMenu = optionalElement<HTMLElement>("#slash-command-menu");
 const chatUnavailableStatus = requiredElement<HTMLElement>("#chat-unready-status");
 const chatMessages = optionalElement<HTMLElement>("#chat-messages");
@@ -170,6 +192,13 @@ const aiAnnotateButton = requiredElement<HTMLButtonElement>("#ai-annotate-button
 const unreadySheet = requiredElement<HTMLElement>("#unready-sheet");
 const unreadyMessage = requiredElement<HTMLElement>("#unready-message");
 const closeUnreadyButton = requiredElement<HTMLButtonElement>("#close-unready");
+const messageReader = optionalElement<HTMLDialogElement>("#message-reader");
+const messageReaderTitle = optionalElement<HTMLElement>("#message-reader-title");
+const messageReaderBody = optionalElement<HTMLElement>("#message-reader-body");
+const messageReaderClose = optionalElement<HTMLButtonElement>("#reader-close");
+const messageReaderZoomIn = optionalElement<HTMLButtonElement>("#reader-zoom-in");
+const messageReaderZoomOut = optionalElement<HTMLButtonElement>("#reader-zoom-out");
+const messageReaderCopy = optionalElement<HTMLButtonElement>("#reader-copy");
 
 let currentSnapshot: PageSnapshot | undefined;
 let sending = false;
@@ -195,7 +224,82 @@ let studyActionBusy = false;
 let studyStateRevision = 0;
 let currentStudyTabOrigin: string | undefined;
 let chatBusy = false;
+const archiveSelection = new Map<string, KnowledgeReference>();
+let selectionWrite: Promise<boolean> = Promise.resolve(true);
+
+function toggleArchiveSelection(ref: KnowledgeReference, checked: boolean): void {
+  const key = `${ref.knowledgeId}:${ref.version}`;
+  if (checked && archiveSelection.size >= 10) {
+    chatUnavailableStatus.textContent = "一次最多选择 10 条知识。";
+    document.querySelectorAll<HTMLInputElement>("[data-archive-selection]").forEach((box) => { box.checked = archiveSelection.has(box.dataset.archiveSelection ?? ""); });
+    return;
+  }
+  if (checked) archiveSelection.set(key, ref); else archiveSelection.delete(key);
+  document.querySelectorAll<HTMLInputElement>("[data-archive-selection]").forEach((box) => { box.checked = archiveSelection.has(box.dataset.archiveSelection ?? ""); });
+  const conversationId = chatConversationId;
+  const references = [...archiveSelection.values()];
+  selectionWrite = selectionWrite.then(async () => {
+    if (!conversationId) return false;
+    const result = await selectArchiveKnowledge(conversationId, references);
+    if (!result.ok && conversationId === chatConversationId) chatUnavailableStatus.textContent = result.error.message;
+    if (result.ok) workspaceChannel?.postMessage({ type: "archive_selection_changed", conversationId });
+    return result.ok;
+  });
+}
+
+function knowledgeCard(view: KnowledgeTaskView): HTMLElement {
+  const card = renderKnowledgeResults(view, renderMarkdownInto, { selected: new Set(archiveSelection.keys()), toggle: toggleArchiveSelection });
+  if (view.items.some((item) => item.publishCandidate && !item.archived)) {
+    const preview = document.createElement("button"); preview.type = "button"; preview.textContent = "预览归档所选知识";
+    preview.addEventListener("click", async () => {
+      if (chatBusy || !chatConversationId) return;
+      preview.disabled = true;
+      const conversationId = chatConversationId;
+      try {
+        if (!(await selectionWrite)) return;
+        const result = await prepareArchive(conversationId);
+        if (!result.ok) { chatUnavailableStatus.textContent = result.error.message; return; }
+        if (chatConversationId === conversationId) await reviewArchive(result.response, chatUnavailableStatus);
+      } finally { preview.disabled = false; }
+    });
+    card.append(preview);
+  }
+  return card;
+}
+
+async function reviewArchive(view: ArchiveConfirmation, status: HTMLElement): Promise<void> {
+  if (await reviewArchiveConfirmation(view)) {
+    status.textContent = "正在写入已确认的归档计划…";
+    const result = await decideArchive(view, "confirm");
+    status.textContent = result.ok ? result.response.message : result.error.message;
+    workspaceChannel?.postMessage({ type: "archive_changed" });
+  }
+  if (view.conversationId === chatConversationId && !chatBusy) await loadStudyConversationForState(chatLoadedKey);
+}
+
+function appendArchiveCards(host: HTMLElement | undefined | null, views: ArchiveConfirmation[]): void {
+  for (const view of views) {
+    const existing = Array.from(chatMessages?.querySelectorAll<HTMLElement>(".archive-confirmation-card") ?? []).find((card) => card.dataset.confirmationId === view.confirmationId);
+    const card = renderArchiveCard(view, reviewArchive);
+    if (existing) existing.replaceWith(card); else host?.append(card);
+  }
+}
+
+async function refreshDurableArchiveCards(): Promise<void> {
+  const conversationId = chatConversationId;
+  if (!conversationId) return;
+  const result = await getStudyConversation(conversationId);
+  if (result.ok && chatConversationId === conversationId) {
+    result.response.messages.forEach((message) => appendArchiveCards(chatMessages, message.archiveConfirmations ?? []));
+  }
+}
+const knowledgeTaskPoller = new KnowledgeResultPoller(() => chatBusy, async () => {
+  if (chatLoadedKey) await loadStudyConversationForState(chatLoadedKey);
+});
+window.addEventListener("pagehide", () => knowledgeTaskPoller.dispose());
 let chatAbortController: AbortController | undefined;
+const workspaceChannel = typeof BroadcastChannel !== "undefined" && typeof chrome.runtime?.getURL === "function"
+  ? new BroadcastChannel("learnflow-workspace-v3") : undefined;
 let chatConversationId: string | undefined;
 let chatLoadGeneration = 0;
 let chatLoadedKey: string | undefined;
@@ -224,6 +328,7 @@ const archiveCandidateIds = new Set<string>();
 const archiveCandidates = new Map<string, PublishCandidateResponse>();
 let pendingArchiveCandidate: PublishCandidateResponse | undefined;
 let pendingArchiveCandidates: PublishCandidateResponse[] | undefined;
+let archivePreviewApproved = false;
 
 serviceUrl.value = LOCAL_INGEST_URL;
 
@@ -310,6 +415,10 @@ function renderStudyState(nextState: StudyState): void {
     ? `${nextConversationId}\u0000${snapshotViewKey(nextState.currentSnapshot)}`
     : undefined;
   if (chatConversationId && chatConversationId !== nextConversationId) {
+    archiveSelection.clear();
+    knowledgeTaskPoller.update([]);
+    const archiveDialog = document.querySelector<HTMLDialogElement>("#archive-confirm");
+    if (archiveDialog?.open) archiveDialog.close("later");
     chatAbortController?.abort();
     chatAbortController = undefined;
     chatBusy = false;
@@ -322,6 +431,7 @@ function renderStudyState(nextState: StudyState): void {
     archiveCandidates.clear();
     pendingArchiveCandidate = undefined;
     pendingArchiveCandidates = undefined;
+    archivePreviewApproved = false;
   }
   studyState = nextState;
   studyStatus.textContent = studyStatusLabels[nextState.status];
@@ -496,6 +606,28 @@ function markdownToHtml(markdown: string): string {
 
 function renderMarkdownInto(element: HTMLElement, markdown: string): void {
   element.innerHTML = markdownToHtml(markdown);
+  highlightCode(element);
+}
+
+let messageReaderScale = 1;
+const MESSAGE_READER_FONT_SIZE = 16;
+let messageReaderPlainText = "";
+
+function openMessageReader(title: string, content: HTMLElement): void {
+  if (!messageReader || !messageReaderBody) return;
+  if (messageReaderTitle) messageReaderTitle.textContent = title;
+  messageReaderBody.innerHTML = content.innerHTML;
+  messageReaderPlainText = content.innerText;
+  messageReaderScale = 1;
+  messageReaderBody.style.fontSize = `${MESSAGE_READER_FONT_SIZE}px`;
+  if (typeof messageReader.showModal === "function") messageReader.showModal();
+  else messageReader.setAttribute("open", "");
+}
+
+function closeMessageReader(): void {
+  if (!messageReader) return;
+  if (typeof messageReader.close === "function") messageReader.close();
+  else messageReader.removeAttribute("open");
 }
 
 function appendChatMessage(message: StudyMessage): HTMLElement | undefined {
@@ -513,6 +645,35 @@ function appendChatMessage(message: StudyMessage): HTMLElement | undefined {
     body.textContent = message.content;
   }
   wrapper.append(role, body);
+  if (message.activities?.length) wrapper.append(renderActivityTrace(message.activities));
+  if (message.knowledge) wrapper.append(knowledgeCard(message.knowledge));
+  appendArchiveCards(wrapper, message.archiveConfirmations ?? []);
+  if (message.role === "assistant") {
+    const tools = document.createElement("div");
+    tools.className = "chat-message-tools";
+    const readButton = document.createElement("button");
+    readButton.className = "text-button";
+    readButton.type = "button";
+    readButton.textContent = "放大阅读";
+    readButton.addEventListener("click", () => {
+      openMessageReader("LearnFlow · 回答详情", body);
+    });
+    const copyButton = document.createElement("button");
+    copyButton.className = "text-button";
+    copyButton.type = "button";
+    copyButton.textContent = "复制";
+    copyButton.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(body.innerText);
+        copyButton.textContent = "已复制";
+        window.setTimeout(() => (copyButton.textContent = "复制"), 1_500);
+      } catch {
+        copyButton.textContent = "请手动复制";
+      }
+    });
+    tools.append(readButton, copyButton);
+    wrapper.append(tools);
+  }
   if (message.selectedText) {
     const source = document.createElement("small");
     source.className = "chat-message-source";
@@ -545,12 +706,14 @@ async function commitArchiveCandidate(
   archiveButton: HTMLButtonElement,
   laterButton: HTMLButtonElement,
 ): Promise<void> {
+  if (!(await confirmArchivePreview([candidate]))) return;
   archiveButton.disabled = true;
   laterButton.disabled = true;
   status.textContent = "正在重新校验来源并归档…";
   const result = await commitAnnotation(candidate.knowledgeId, candidate.knowledgeVersion);
   if (!result.ok) {
     if (["NOTE_CONFLICT", "PROPOSAL_EXPIRED"].includes(result.error.code)) {
+      showKnowledgeToast(result.error.message);
       removeArchiveCandidateCard(candidate);
       pendingArchiveCandidate = undefined;
       return;
@@ -565,10 +728,13 @@ async function commitArchiveCandidate(
     : result.response.status === "noop"
       ? "笔记中已经存在，无需重复写入。"
       : "来源发生变化，需要重新采集并保存当前章节。";
-  if (result.response.status === "needs_review") {
+  if (["published", "noop"].includes(result.response.status)) {
     removeArchiveCandidateCard(candidate);
+    showKnowledgeToast(`已处理：${result.response.plan?.targetRelativePath ?? candidate.targetRelativePath}`);
   } else {
-    removeArchiveCandidateCard(candidate);
+    status.textContent = result.response.plan?.conflictReason ?? result.response.failureCode ?? "归档未完成，需要检查。";
+    archiveButton.disabled = false;
+    laterButton.disabled = false;
   }
   pendingArchiveCandidate = undefined;
 }
@@ -883,7 +1049,8 @@ async function refreshArchiveCandidateCards(): Promise<PublishCandidateResponse[
     );
   candidates.forEach((candidate) => {
     archiveCandidates.set(`${candidate.knowledgeId}:${candidate.knowledgeVersion}`, candidate);
-    appendArchiveCandidateCard(candidate);
+    const alreadyShown = Array.from(chatMessages?.querySelectorAll<HTMLElement>(".knowledge-result-card") ?? []).some((card) => card.dataset.knowledgeKey === `${candidate.knowledgeId}:${candidate.knowledgeVersion}`);
+    if (!alreadyShown) appendArchiveCandidateCard(candidate);
   });
   return candidates;
 }
@@ -1003,6 +1170,10 @@ function appendRecentKnowledgeChoice(): void {
 async function handleKnowledgeCommand(question: string): Promise<boolean> {
   const intent = routeCommandIntent(question);
   if (intent.kind === "dialogue") return false;
+  // Natural-language knowledge requests belong to the Agent; slash shortcuts
+  // retain their existing deterministic handlers.
+  if (intent.kind === "extract" && !question.trim().startsWith("/")) return false;
+  if (intent.kind === "archive-all" && !question.trim().startsWith("/")) return false;
   if (intent.kind === "invalid-command") {
     appendChatMessage({
       schemaVersion: 1,
@@ -1036,6 +1207,10 @@ async function handleKnowledgeCommand(question: string): Promise<boolean> {
   const archiveIndex = intent.kind === "archive-one" ? intent.index - 1 : undefined;
   const archiveAll = intent.kind === "archive-all";
   const confirms = intent.kind === "confirm-archive";
+  if (confirms && !pendingArchiveCandidate && !pendingArchiveCandidates) {
+    appendChatMessage({ schemaVersion: 1, messageId: `local-confirm-help-${Date.now()}`, role: "assistant", content: "请先生成归档预览，再在确认卡片中点击确认；聊天文字不会直接触发文件写入。", origin: "ai", createdAt: new Date().toISOString() });
+    return true;
+  }
 
   if (asksToExtract) {
     const result = await requestKnowledgeExtraction();
@@ -1106,6 +1281,7 @@ async function handleKnowledgeCommand(question: string): Promise<boolean> {
     }
     pendingArchiveCandidate = candidate;
     pendingArchiveCandidates = undefined;
+    archivePreviewApproved = false;
     appendChatMessage({
       schemaVersion: 1,
       messageId: `local-knowledge-confirm-${Date.now()}`,
@@ -1114,6 +1290,10 @@ async function handleKnowledgeCommand(question: string): Promise<boolean> {
       origin: "ai",
       createdAt: new Date().toISOString(),
     });
+    if (await confirmArchivePreview([candidate])) {
+      archivePreviewApproved = true;
+      await handleKnowledgeCommand("/确认归档");
+    }
     return true;
   }
 
@@ -1131,6 +1311,7 @@ async function handleKnowledgeCommand(question: string): Promise<boolean> {
     }
     pendingArchiveCandidate = undefined;
     pendingArchiveCandidates = candidates;
+    archivePreviewApproved = false;
     const targets = candidates
       .map((candidate, index) => `${index + 1}. ${archiveTargetDescription(candidate)}`)
       .join("\n");
@@ -1142,22 +1323,28 @@ async function handleKnowledgeCommand(question: string): Promise<boolean> {
       origin: "ai",
       createdAt: new Date().toISOString(),
     });
+    if (await confirmArchivePreview(candidates)) {
+      archivePreviewApproved = true;
+      await handleKnowledgeCommand("/确认归档");
+    }
     return true;
   }
 
   if (pendingArchiveCandidate) {
     const candidate = pendingArchiveCandidate;
+    if (!archivePreviewApproved && !(await confirmArchivePreview([candidate]))) return true;
+    archivePreviewApproved = false;
     const result = await commitAnnotation(candidate.knowledgeId, candidate.knowledgeVersion);
     appendChatMessage({
       schemaVersion: 1,
       messageId: `local-knowledge-commit-${Date.now()}`,
       role: "assistant",
       content: result.ok && result.response.status === "published"
-        ? "已确认，知识已归档到当前笔记。"
+        ? `已归档：${result.response.plan?.targetRelativePath ?? candidate.targetRelativePath ?? candidate.targetNoteId} · ${candidate.headingPath.join(" / ")}`
         : result.ok && result.response.status === "noop"
           ? "这条知识已经归档过了，无需重复写入。"
           : result.ok
-            ? "当前来源发生变化，暂未写入；请重新采集并保存章节。"
+            ? result.response.plan?.conflictReason ?? result.response.failureCode ?? "归档未完成，需要检查。"
             : result.error.message,
       origin: "ai",
       createdAt: new Date().toISOString(),
@@ -1167,6 +1354,8 @@ async function handleKnowledgeCommand(question: string): Promise<boolean> {
   }
   if (pendingArchiveCandidates) {
     const candidatesToCommit = pendingArchiveCandidates;
+    if (!archivePreviewApproved && !(await confirmArchivePreview(candidatesToCommit))) return true;
+    archivePreviewApproved = false;
     pendingArchiveCandidates = undefined;
     const results: string[] = [];
     for (const [index, candidate] of candidatesToCommit.entries()) {
@@ -1179,9 +1368,9 @@ async function handleKnowledgeCommand(question: string): Promise<boolean> {
           ? "已归档"
           : result.response.status === "noop"
             ? "已存在"
-            : "需要检查"
+            : `需要检查：${result.response.plan?.conflictReason ?? result.response.failureCode ?? result.response.status}`
         : `失败：${result.error.message}`;
-      results.push(`${index + 1}. ${status}`);
+      results.push(`${index + 1}. ${status} · ${result.ok ? result.response.plan?.targetRelativePath ?? candidate.targetRelativePath ?? candidate.targetNoteId : candidate.targetRelativePath ?? candidate.targetNoteId} · ${candidate.headingPath.join(" / ")}`);
     }
     appendChatMessage({
       schemaVersion: 1,
@@ -1234,7 +1423,13 @@ async function loadStudyConversationForState(expectedKey?: string): Promise<void
     return;
   }
   if (result.ok) {
+    archiveSelection.clear();
+    result.response.selectedKnowledge?.forEach((ref) => archiveSelection.set(`${ref.knowledgeId}:${ref.version}`, ref));
+    const oldScroll = chatScroll?.scrollTop ?? 0;
+    const follow = !chatScroll || chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 100;
     renderChatMessages(result.response.messages);
+    if (!follow && chatScroll) chatScroll.scrollTop = oldScroll;
+    knowledgeTaskPoller.update(result.response.messages);
     void refreshArchiveCandidateCards();
     chatLoadedKey = expectedKey;
     chatUnavailableStatus.textContent = result.response.messages.length
@@ -1261,7 +1456,8 @@ function formatCaptureTime(value: string): string {
 
 function updateWorkspaceAvailability(): void {
   const available = Boolean(currentSnapshot?.blocks.length);
-  const hasChatContext = available && Boolean(studyState.currentSession);
+  const hasChatContext = available && Boolean(studyState.currentSession && currentSnapshot &&
+    comparablePageUrl(studyState.currentSession.sourceUrl) === comparablePageUrl(currentSnapshot.url));
   organizeNoteButton.disabled = !available || isNoteBusy();
   documentV2PreviewButton.disabled =
     !available ||
@@ -1299,9 +1495,36 @@ function setWorkspaceTab(name: "chat" | "notes"): void {
     button.classList.toggle("active", active);
     button.setAttribute("aria-current", active ? "page" : "false");
   });
-  chatView.classList.toggle("active", name === "chat");
+  // Chat remains the primary workspace; notes open as a drawer over it.
+  chatView.classList.add("active");
   notesView.classList.toggle("active", name === "notes");
-  composerArea.classList.toggle("hide", name !== "chat");
+  composerArea.classList.remove("hide");
+  const shade = document.getElementById("drawer-shade");
+  if (shade) shade.hidden = name === "chat";
+}
+
+async function openWorkspaceWindow(): Promise<void> {
+  if (typeof chrome.windows?.create !== "function") {
+    showUnavailable("独立宽屏工作台");
+    return;
+  }
+  try {
+    const url = chrome.runtime.getURL("sidepanel.html?workspace=wide");
+    const windows = await chrome.windows.getAll({ populate: true });
+    const existing = windows.find((window) => window.tabs?.some((tab) => tab.url === url));
+    if (existing?.id) {
+      await chrome.windows.update(existing.id, { focused: true });
+      return;
+    }
+    await chrome.windows.create({
+      url,
+      type: "popup",
+      width: 980,
+      height: 820,
+    });
+  } catch {
+    showUnavailable("独立宽屏工作台");
+  }
 }
 
 async function requestCaptureFromUser(): Promise<void> {
@@ -1530,15 +1753,36 @@ async function readCurrentSelection(): Promise<PageSelection | undefined> {
 async function sendStudyMessage(): Promise<void> {
   const session = studyState.currentSession;
   if (!currentSnapshot || !session || chatBusy) return;
+  if (comparablePageUrl(currentSnapshot.url) !== comparablePageUrl(session.sourceUrl)) {
+    chatUnavailableStatus.textContent = "章节与快照尚未同步，请等待重新采集完成。";
+    return;
+  }
   const question = chatInput.value.trim();
   if (!question) return;
   chatBusy = true;
+  if (chatStopButton) chatStopButton.hidden = false;
   updateWorkspaceAvailability();
-  const selection = await readCurrentSelection();
+  const snapshot = currentSnapshot;
+  if (!(await selectionWrite)) {
+    chatBusy = false;
+    chatUnavailableStatus.textContent = "知识选择尚未保存，请重新勾选后再试。";
+    updateWorkspaceAvailability();
+    return;
+  }
+  const selection = routeCommandIntent(question).kind === "dialogue" ? await readCurrentSelection() : undefined;
+  if (studyState.currentSession?.sessionId !== session.sessionId || currentSnapshot !== snapshot) {
+    chatBusy = false;
+    if (chatStopButton) chatStopButton.hidden = true;
+    updateWorkspaceAvailability();
+    return;
+  }
   const conversationId = conversationIdForSession(session.sessionId);
   chatConversationId = conversationId;
   chatLoadedKey = `${conversationId}\u0000${snapshotViewKey(currentSnapshot)}`;
   const payload: StudyChatPayload = {
+    readonlyAgent: true,
+    knowledgeTools: true,
+    archiveTools: true,
     schemaVersion: 1,
     conversationId,
     sessionId: session.sessionId,
@@ -1550,7 +1794,7 @@ async function sendStudyMessage(): Promise<void> {
     selectedText: selection?.text,
     question,
     cloudConsent: true,
-    snapshot: currentSnapshot,
+    snapshot,
   };
   chatInput.value = "";
   updateWorkspaceAvailability();
@@ -1574,6 +1818,13 @@ async function sendStudyMessage(): Promise<void> {
   appendChatMessage(userMessage);
   if (await handleKnowledgeCommand(question)) {
     chatBusy = false;
+    if (chatStopButton) chatStopButton.hidden = true;
+    workspaceChannel?.postMessage({ conversationId, type: "knowledge_changed" });
+    const kind = routeCommandIntent(question).kind;
+    if (["archive-all", "archive-one", "confirm-archive"].includes(kind)) {
+      void refreshDurableArchiveCards();
+      workspaceChannel?.postMessage({ conversationId, type: "messages_changed" });
+    }
     updateWorkspaceAvailability();
     return;
   }
@@ -1586,37 +1837,82 @@ async function sendStudyMessage(): Promise<void> {
     createdAt: new Date().toISOString(),
   });
   const assistantBody = assistantNode?.querySelector<HTMLElement>(".chat-message-body");
+  if (assistantBody) assistantBody.textContent = "正在核对当前章节，等待模型返回…";
   const controller = new AbortController();
   chatAbortController = controller;
   let streamedAnswer = "";
+  const activities: StudyActivityEvent[] = [];
+  const eventIds = new Set<string>();
   try {
     const result = await streamStudyChat(
       payload,
       (delta) => {
+        if (chatAbortController !== controller || chatConversationId !== conversationId) return;
+        const follow = chatScroll ? chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 100 : false;
         streamedAnswer += delta;
         if (assistantBody) assistantBody.textContent = streamedAnswer;
+        if (follow && chatScroll) chatScroll.scrollTop = chatScroll.scrollHeight;
       },
       controller.signal,
+      (event) => {
+        if (chatAbortController !== controller || chatConversationId !== conversationId || (event.eventId && eventIds.has(event.eventId))) return;
+        if (!streamedAnswer && assistantBody) assistantBody.textContent = event.type === "tool_started" ? "正在读取当前章节原文…" : "正在根据原文生成回答…";
+        if (event.eventId) eventIds.add(event.eventId);
+        activities.push(event);
+        const previous = assistantNode?.querySelector<HTMLDetailsElement>(".activity-trace");
+        const trace = renderActivityTrace(activities);
+        trace.open = previous?.open ?? false;
+        if (previous) previous.replaceWith(trace);
+        else assistantNode?.append(trace);
+      },
     );
-    if (chatConversationId !== conversationId) return;
+    if (chatAbortController !== controller || chatConversationId !== conversationId) return;
     if (!result.ok) {
-      if (assistantBody) assistantBody.textContent = result.error.message;
+      if (assistantBody) {
+        renderMarkdownInto(assistantBody, streamedAnswer);
+        const error = document.createElement("p");
+        error.setAttribute("role", "alert");
+        error.textContent = result.error.message;
+        assistantBody.append(error);
+      }
       chatUnavailableStatus.textContent = result.error.message;
+      const retry = document.createElement("button");
+      retry.className = "text-button";
+      retry.type = "button";
+      retry.textContent = "重试";
+      retry.addEventListener("click", () => {
+        if (studyState.currentSession?.sessionId !== session.sessionId) {
+          chatUnavailableStatus.textContent = "请回到原章节后重试这条消息。";
+          return;
+        }
+        chatInput.value = question;
+        updateWorkspaceAvailability();
+        void sendStudyMessage();
+      });
+      assistantNode?.append(retry);
       return;
     }
     if (assistantBody) {
       renderMarkdownInto(assistantBody, result.response.message.content);
     }
-    chatUnavailableStatus.textContent = "回答已保存到当前章节会话，可以继续追问。";
+    if (result.response.message.knowledge) assistantNode?.append(knowledgeCard(result.response.message.knowledge));
+    appendArchiveCards(assistantNode, result.response.message.archiveConfirmations ?? []);
+    knowledgeTaskPoller.update([result.response.message], false);
+    chatUnavailableStatus.textContent = result.response.message.knowledge && pendingKnowledgeStates.has(result.response.message.knowledge.state)
+      ? "知识任务处理中，切换章节或关闭窗口后仍可恢复查看。" : "回答已保存到当前章节会话，可以继续追问。";
     maybeOfferKnowledgeExtraction();
+    workspaceChannel?.postMessage({ conversationId, type: "messages_changed" });
   } finally {
-    if (chatAbortController === controller) chatAbortController = undefined;
-    chatBusy = false;
-    updateWorkspaceAvailability();
-    if (pendingChatLoadKey !== undefined) {
-      const expectedKey = pendingChatLoadKey;
-      pendingChatLoadKey = undefined;
-      void loadStudyConversationForState(expectedKey);
+    if (chatAbortController === controller) {
+      chatAbortController = undefined;
+      chatBusy = false;
+      if (chatStopButton) chatStopButton.hidden = true;
+      updateWorkspaceAvailability();
+      if (pendingChatLoadKey !== undefined) {
+        const expectedKey = pendingChatLoadKey;
+        pendingChatLoadKey = undefined;
+        void loadStudyConversationForState(expectedKey);
+      }
     }
   }
 }
@@ -2482,6 +2778,9 @@ captureButton.addEventListener("click", () => void requestCaptureFromUser());
 saveTokenButton.addEventListener("click", () => void saveToken());
 sendButton.addEventListener("click", () => void sendCurrentSnapshot());
 chatSendButton.addEventListener("click", () => void sendStudyMessage());
+chatStopButton?.addEventListener("click", () => {
+  chatAbortController?.abort();
+});
 chatInput.addEventListener("input", () => {
   updateWorkspaceAvailability();
   updateSlashCommandMenu();
@@ -2567,9 +2866,39 @@ document.querySelectorAll<HTMLButtonElement>("button[data-prompt]").forEach((but
 settingsButton.addEventListener("click", (event) => {
   event.stopPropagation();
   settingsPanel.hidden = !settingsPanel.hidden;
+  notesView.classList.remove("active");
+  const shade = document.getElementById("drawer-shade");
+  if (shade) shade.hidden = settingsPanel.hidden;
   if (!settingsPanel.hidden) {
     void refreshStudyPermissionStatus();
   }
+});
+notesButton?.addEventListener("click", () => setWorkspaceTab("notes"));
+notesDrawerClose?.addEventListener("click", () => setWorkspaceTab("chat"));
+wideWorkspaceButton?.addEventListener("click", () => void openWorkspaceWindow());
+windowWorkspaceButton?.addEventListener("click", () => void openWorkspaceWindow());
+messageReaderClose?.addEventListener("click", closeMessageReader);
+messageReaderZoomIn?.addEventListener("click", () => {
+  messageReaderScale = Math.min(1.6, messageReaderScale + 0.1);
+  if (messageReaderBody) messageReaderBody.style.fontSize = `${MESSAGE_READER_FONT_SIZE * messageReaderScale}px`;
+});
+messageReaderZoomOut?.addEventListener("click", () => {
+  messageReaderScale = Math.max(0.8, messageReaderScale - 0.1);
+  if (messageReaderBody) messageReaderBody.style.fontSize = `${MESSAGE_READER_FONT_SIZE * messageReaderScale}px`;
+});
+messageReaderCopy?.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(messageReaderPlainText);
+    messageReaderCopy.textContent = "已复制";
+    window.setTimeout(() => {
+      if (messageReaderCopy) messageReaderCopy.textContent = "复制内容";
+    }, 1_500);
+  } catch {
+    if (messageReaderCopy) messageReaderCopy.textContent = "请手动复制";
+  }
+});
+messageReader?.addEventListener("click", (event) => {
+  if (event.target === messageReader) closeMessageReader();
 });
 panelRoot.addEventListener("click", (event) => {
   const target = event.target;
@@ -2594,3 +2923,30 @@ chrome.runtime?.onMessage?.addListener((message) => {
 
 void loadStoredToken();
 void loadStudyUi();
+initializeArchiveDialog(() => chatConversationId);
+workspaceChannel?.addEventListener("message", (event) => {
+  if (event.data?.type === "archive_selection_changed" && event.data?.conversationId === chatConversationId) {
+    if (chatBusy) pendingChatLoadKey = chatLoadedKey;
+    else void loadStudyConversationForState(chatLoadedKey);
+    return;
+  }
+  if (event.data?.type === "archive_changed") {
+    void refreshArchiveCandidateCards();
+    if (!chatBusy) void loadStudyConversationForState(chatLoadedKey);
+    return;
+  }
+  if (event.data?.conversationId !== chatConversationId || chatBusy) return;
+  if (event.data?.type === "messages_changed") void loadStudyConversationForState(chatLoadedKey);
+  if (event.data?.type === "knowledge_changed") void refreshArchiveCandidateCards();
+});
+initializeWorkspaceShell({
+  command: handleKnowledgeCommand,
+  organize: previewCurrentDocumentV2,
+  preview: async (candidate) => {
+    if (await confirmArchivePreview([candidate])) {
+      const result = await commitAnnotation(candidate.knowledgeId, candidate.knowledgeVersion);
+      showKnowledgeToast(result.ok ? (result.response.plan?.conflictReason ?? `归档结果：${result.response.status} · ${result.response.plan?.targetRelativePath ?? candidate.targetRelativePath}`) : result.error.message);
+    }
+  },
+  source: () => ({ url: studyState.currentSession?.sourceUrl, conversationId: studyState.currentSession ? conversationIdForSession(studyState.currentSession.sessionId) : undefined }),
+});

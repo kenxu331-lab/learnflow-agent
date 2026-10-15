@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     llm_max_context_characters: int = 48_000
     learning_memory_db_path: str = "data/learning_memory.sqlite3"
     study_chat_max_history_messages: int = 20
+    study_agent_max_steps: int = 6
+    study_agent_timeout_seconds: float = 120.0
     knowledge_profile_id: str = "local-default"
     knowledge_extraction_max_input_tokens: int = 8_000
     knowledge_extraction_max_output_tokens: int = 3_000
